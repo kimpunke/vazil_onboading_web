@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Output Dashboard</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <h1>Output Dashboard</h1>
+
+      <div class="controls">
+        <span class="label">Run</span>
+        <select id="runSelect"></select>
+        <button id="refreshBtn" type="button">새로고침</button>
+      </div>
+    </div>
+
+    <div id="errorBox" class="err" style="display:none; margin-top:12px;"></div>
+
+    <div class="grid cards">
+      <div class="card">
+        <div class="label">Total</div>
+        <div class="value mono" id="kpiTotal">-</div>
+        <div class="sub">전체 레코드 수</div>
+      </div>
+
+      <div class="card">
+        <div class="label">Pass</div>
+        <div class="value mono ok" id="kpiPass">-</div>
+        <div class="sub">성공(통과) 건수</div>
+      </div>
+
+      <div class="card">
+        <div class="label">Fail</div>
+        <div class="value mono bad" id="kpiFail">-</div>
+        <div class="sub">실패(불합격) 건수</div>
+      </div>
+
+      <div class="card">
+        <div class="label">Fail Rate</div>
+        <div class="value mono" id="kpiRate">-</div>
+        <div class="sub">fail / total</div>
+      </div>
+    </div>
+
+    <div class="grid main">
+      <!-- 왼쪽: Overall -->
+      <div class="card">
+        <div class="row between">
+          <div>
+            <div class="label">Overall</div>
+            <div class="pill-row">
+              <span class="pill"><span class="dot ok"></span>Pass</span>
+              <span class="pill"><span class="dot bad"></span>Fail(유형별)</span>
+            </div>
+          </div>
+          <div class="label mono" id="runMeta"></div>
+        </div>
+
+        <div class="overall">
+          <div class="chart-box">
+            <canvas id="pie" width="280" height="280" class="pie"></canvas>
+          </div>
+          <div class="stage-list" id="failList"></div>
+        </div>
+      </div>
+
+      <!-- 오른쪽: Fail Explorer -->
+      <div class="card">
+        <div class="row between">
+          <div>
+            <div class="label">Fail Explorer</div>
+            <div class="sub">fail_data.jsonl을 필터/검색해서 개별 실패 레코드를 확인합니다.</div>
+          </div>
+          <div class="row">
+            <button id="failReloadBtn" type="button">불러오기</button>
+          </div>
+        </div>
+
+        <div class="filters">
+          <div class="filter-item">
+            <div class="label">Stage</div>
+            <select id="failStage">
+              <option value="">(전체)</option>
+              <option value="convert">convert</option>
+              <option value="dedupe">dedupe</option>
+              <option value="checking">checking</option>
+              <option value="ct">ct</option>
+            </select>
+          </div>
+
+          <div class="filter-item">
+            <div class="label">Error Code</div>
+            <input id="failCode" placeholder="예: DUPLICATE / REQUIRED / TIME_INVERSION" />
+          </div>
+
+          <div class="filter-item grow">
+            <div class="label">Search</div>
+            <input id="failQuery" placeholder="recordId/rawRecordId/message 검색" />
+          </div>
+        </div>
+
+        <div class="row between" style="margin-top:10px;">
+          <div class="label mono" id="failPageMeta">-</div>
+          <div class="row">
+            <button id="failPrevBtn" type="button">이전</button>
+            <button id="failNextBtn" type="button">다음</button>
+          </div>
+        </div>
+
+        <div class="tbl-wrap">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th style="width:34%;">recordId</th>
+                <th style="width:16%;">stage</th>
+                <th style="width:18%;">code</th>
+                <th>message</th>
+              </tr>
+            </thead>
+            <tbody id="failTbody"></tbody>
+          </table>
+        </div>
+
+        <div class="detail">
+          <div class="label">Detail</div>
+          <pre id="failDetail" class="pre muted">행을 클릭하면 여기에서 상세 JSON을 봅니다.</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 설정(환경별 API_BASE 등) -->
+  <script src="./config.js"></script>
+
+  <!-- Chart.js (빌드 없이 CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+  <!-- 앱 로직 -->
+  <script src="./app.js"></script>
+</body>
+</html>

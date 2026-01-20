@@ -1,0 +1,241 @@
+:root{
+    --bg:#0b0f19; --card:#121a2a; --muted:#94a3b8; --text:#e2e8f0;
+    --ok:#22c55e; --bad:#ef4444; --border:#1f2a44;
+  }
+  
+  body{
+    margin:0;
+    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans KR", Arial;
+    background:var(--bg);
+    color:var(--text);
+  }
+  
+  .wrap{ max-width:1400px; margin:0 auto; padding:24px; }
+
+  .top{ display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+  h1{ font-size:20px; margin:0; letter-spacing:0.2px; }
+  
+  .controls{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  select, button, input{
+    background:#0e1626;
+    border:1px solid var(--border);
+    color:var(--text);
+    padding:10px 12px;
+    border-radius:12px;
+    outline:none;
+  }
+  input{ width:100%; }  
+  button{ cursor:pointer; }
+  button:hover{ border-color:#2b3b64; }
+  
+  .grid{ display:grid; gap:12px; margin-top:16px; }
+  .grid.cards{ grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  @media (max-width: 900px){ .grid.cards{ grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 520px){ .grid.cards{ grid-template-columns: 1fr; } }
+  
+.grid.main{ grid-template-columns: 1fr 1fr; align-items:stretch; }
+  @media (max-width: 900px){ .grid.main{ grid-template-columns: 1fr; } }
+  
+  .card{
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:16px;
+    padding:14px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.25);
+  }
+  
+  .label{ color:var(--muted); font-size:12px; }
+  .value{ font-size:22px; font-weight:700; margin-top:6px; }
+  .value.small-title{ font-size:16px; }
+  .sub{ margin-top:10px; color:var(--muted); font-size:12px; }
+  
+  .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+  .ok{ color:var(--ok); }
+  .bad{ color:var(--bad); }
+  
+  .row{ display:flex; gap:12px; align-items:center; }
+  .row.between{ justify-content:space-between; }
+  
+  .pill-row{ margin-top:6px; display:flex; gap:10px; flex-wrap:wrap; }
+  .pill{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    padding:6px 10px;
+    border-radius:999px;
+    border:1px solid var(--border);
+    background:#0e1626;
+    color:var(--muted);
+    font-size:12px;
+  }
+  
+  .dot{ width:10px; height:10px; border-radius:50%; }
+  .dot.ok{ background:var(--ok); }
+  .dot.bad{ background:var(--bad); }
+  
+  .overall{
+    margin-top:14px;
+    display:flex;
+    gap:16px;
+    align-items:flex-start;
+    flex-wrap:wrap;
+  }
+  
+  .chart-box{
+    position: relative;
+    width: 280px;
+    height: 280px;
+  }
+  
+  .pie{
+    background:#0e1626;
+    border:1px solid var(--border);
+    border-radius:16px;
+  }
+  
+  .chart-center{
+    position:absolute;
+    inset:0;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    pointer-events:none;
+    text-align:center;
+    gap:6px;
+  }
+  
+  .center-title{
+    font-weight:800;
+    font-size:14px;
+  }
+  
+  .center-sub{
+    color:var(--muted);
+    font-size:12px;
+  }
+  
+  .stage-list{
+    display:grid;
+    gap:8px;
+    min-width:240px;
+  }
+  
+  .stage-item{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    padding:10px 12px;
+    background:#0e1626;
+    border:1px solid var(--border);
+    border-radius:12px;
+  }
+  
+  .err{
+    color:#fecaca;
+    background:#2a1212;
+    border:1px solid #5b1b1b;
+    padding:10px 12px;
+    border-radius:12px;
+  }
+
+  .filters{
+    margin-top:12px;
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+    align-items:flex-end;
+  }
+  
+  .filter-item{ min-width:180px; }
+  .filter-item.grow{ flex: 1 1 320px; min-width:240px; }
+  .tbl-wrap{
+    margin-top:12px;
+    overflow: hidden;      /* 스크롤바 제거 */
+    border-radius:12px;
+    border:1px solid var(--border);
+    max-height: none;      /* 높이 제한 제거 (limit=5면 충분히 들어감) */
+  }
+  
+  
+  .tbl tbody td{
+    padding:10px 12px;
+    line-height: 1.35;
+  }
+  
+  .tbl{
+    width:100%;
+    border-collapse:collapse;
+    background:#0e1626;
+    table-layout: fixed;
+  }
+  .tbl thead th{
+    text-align:left;
+    font-size:12px;
+    color:var(--muted);
+    padding:10px 12px;
+    border-bottom:1px solid var(--border);
+    white-space:nowrap;
+  }
+  .tbl tbody td{
+    padding:10px 12px;
+    border-bottom:1px solid rgba(31,42,68,0.6);
+    vertical-align:top;
+  }
+  .tbl tbody tr:hover{
+    background:#0b1222;
+    cursor:pointer;
+  }
+  
+  .detail{ margin-top:12px; }
+  .pre{
+    margin-top:8px;
+    padding:12px;
+    border-radius:12px;
+    border:1px solid var(--border);
+    background:#0e1626;
+    overflow:auto;
+    max-height:260px;
+    font-size:12px;
+    line-height:1.35;
+  }
+  .muted{ color:var(--muted); }
+  
+  /* failList(오른쪽 요약 리스트) 크기 고정 */
+#failList{
+  height: 280px;          /* 차트(280)와 균형 맞춤 */
+  overflow: auto;         /* 내용 많으면 내부 스크롤 */
+  padding-right: 6px;     /* 스크롤바랑 글자 간격 */
+}
+
+
+/* Fail Explorer 테이블: 메시지 가독성 */
+/* Fail Explorer 테이블: 메시지 가독성 */
+.tbl td{
+  vertical-align: top;
+}
+
+.tbl td:nth-child(1){   /* recordId */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* message 칸(4번째 컬럼)만 2줄 말줄임 */
+.tbl td:nth-child(4){
+  white-space: normal;        /* 줄바꿈 허용 */
+  word-break: break-word;     /* 긴 토큰도 깨지게 */
+  overflow: hidden;
+
+  display: -webkit-box;       /* 2줄 clamp */
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+
+#failDetail{
+  max-height: none;        /* 스크롤 없이 내용만큼 늘어남 */
+  overflow: hidden;        /* 스크롤바 제거 */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
