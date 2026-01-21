@@ -288,3 +288,6 @@
   box-shadow: 0 10px 28px rgba(0,0,0,0.35);
   background: linear-gradient(180deg, #0f1b33, #0b1222);
 }
+
+.stage-item.clickable { cursor: pointer; }
+.stage-item.clickable:hover { filter: brightness(1.08); }

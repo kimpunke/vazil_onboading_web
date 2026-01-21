@@ -66,17 +66,22 @@ def get_fails(
                 if stage_norm and rec.get("stage") != stage_norm:
                     continue
 
-                # 2) code 필터 (errors[].code 중 하나라도 일치하면 통과)
+                # 2) code 필터 (errors[].code 중 하나라도 "부분/대소문자 무시" 매칭되면 통과)
                 if code_norm:
+                    want = code_norm.lower()
                     errs = rec.get("errors", [])
                     ok = False
                     if isinstance(errs, list):
                         for e in errs:
-                            if isinstance(e, dict) and e.get("code") == code_norm:
+                            if not isinstance(e, dict):
+                                continue
+                            c = e.get("code")
+                            if isinstance(c, str) and want in c.lower():
                                 ok = True
                                 break
                     if not ok:
                         continue
+
 
                 # 3) q 검색 (recordId/rawRecordId/stage/errors.message 중심)
                 if q_norm:

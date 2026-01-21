@@ -67,10 +67,15 @@ function renderFailList(failBreakdown) {
 
   for (const [k, v] of entries) {
     const row = document.createElement("div");
-    row.className = "stage-item";
+    row.className = "stage-item clickable";
     row.innerHTML = `<b>${k}</b><span class="mono bad">${fmt(v)}</span>`;
+  
+    row.addEventListener("click", async () => {
+      await drillDownFromOverview(k);
+    });
+  
     el.appendChild(row);
-  }
+  }  
 }
 
 function updateFailCodeDatalist(summary){
@@ -81,7 +86,7 @@ function updateFailCodeDatalist(summary){
   // 여기서 "Error Code"와 1:1 매칭이 안 될 수도 있어서,
   // 우선 "자주 쓰는 코드" + "현재 run에서 실제로 존재한 코드"를 합치는 방식이 안정적이다.
 
-  const base = ["DUPLICATE", "REQUIRED", "TYPE", "MIN_ITEMS", "TIME_INVERSION", "PARSE_ERROR"];
+  const base = ["DUPLICATE", "REQUIRED", "TYPE", "MIN_ITEMS", "TIME_INVERSION"];
   const uniq = new Set(base);
 
   // (가능하면) failList keys도 후보로 넣기
@@ -138,6 +143,13 @@ function renderDonutChart(pass, failBreakdown) {
       }]
     },
     options: {
+      onClick: async (evt, elements) => {
+        if (!elements || elements.length === 0) return;
+        const idx = elements[0].index;
+        const label = pieChart?.data?.labels?.[idx];
+        if (!label) return;
+        await drillDownFromOverview(String(label));
+      },      
       responsive: false,          // canvas size 고정(정적 페이지에서 안정적)
       cutout: "62%",              // 도넛 구멍 크기
       animation: { duration: 250 },
@@ -164,6 +176,63 @@ function renderDonutChart(pass, failBreakdown) {
     }
   });
 }
+
+function presetFailFiltersByType(typeKey) {
+  // summary.errors 키 기준: parse_error / duplicate_error / checking_error ...
+  const key = String(typeKey || "").toLowerCase();
+
+  // 기본: 전부 비우고 시작
+  $("failStage").value = "";
+  $("failCode").value = "";
+  $("failQuery").value = "";
+
+  if (key === "parse_error") {
+    $("failStage").value = "convert";
+    $("failCode").value = "TYPE";
+    return;
+  }
+  if (key === "duplicate_error") {
+    $("failStage").value = "dedupe";
+    $("failCode").value = "DUPLICATE";
+    return;
+  }
+  if (key === "checking_error") {
+    $("failStage").value = "checking";
+    // checking은 코드가 다양(MIN_ITEMS/REQUIRED/TYPE 등)이라 code는 비워두는 게 보통 더 낫다
+    return;
+  }
+
+  // 모르는 타입이면 검색(q)로라도 걸리게
+  $("failQuery").value = key;
+}
+
+async function drillDownFromOverview(label) {
+  const runId = $("runSelect").value;
+
+  clearError();
+  try {
+    // 1) Pass 클릭 → PASS Explorer로
+    if (label === "Pass") {
+      // PASS 필터 초기화(원하면 유지하게 바꿔도 됨)
+      $("passQuery").value = "";
+      passOffset = 0;
+
+      setExplorerMode("PASS", { autoLoad: false });
+      await loadPasses(runId, { resetOffset: true });
+      return;
+    }
+
+    // 2) 특정 Fail 타입 클릭 → FAIL Explorer + preset 필터
+    setExplorerMode("FAIL", { autoLoad: false });
+    presetFailFiltersByType(label);
+    await loadFails(runId, { resetOffset: true });
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+
+
 
 function _firstErrorCode(rec) {
   const errs = rec && rec.errors;
@@ -209,7 +278,7 @@ function setActiveTab(tab){
   $("failDetailRaw").style.display = tab === "raw" ? "block" : "none";
 }
 
-function setExplorerMode(mode) {
+function setExplorerMode(mode, { autoLoad = true } = {}) {
   explorerMode = mode;
 
   // 헤더 텍스트/뱃지
@@ -220,18 +289,6 @@ function setExplorerMode(mode) {
   $("failFilters").style.display = (mode === "FAIL") ? "flex" : "none";
   $("passFilters").style.display = (mode === "PASS") ? "flex" : "none";
 
-  // 테이블/디테일 초기화
-  $("failTbody").innerHTML = "";
-  $("failDetailErrors").textContent = "";
-  $("failDetailContext").textContent = "";
-  $("failDetailRaw").textContent = "";
-  selectedFailRow = null;
-  if (mode === "PASS") {
-    $("failDetailErrors").textContent = "행을 클릭하면 result / context / events&metrics 가 분리되어 표시됩니다.";
-    setActiveTab("errors"); // result 탭(= tabErrors id)로 기본 활성
-  }
-  setActiveTab(activeDetailTab);
-
   // Explorer 안내 문구(모드별)
   if (mode === "FAIL") {
     $("explorerHelp").textContent = "fail_data.jsonl을 필터/검색해서 개별 실패 레코드를 확인합니다.";
@@ -239,8 +296,13 @@ function setExplorerMode(mode) {
     $("explorerHelp").textContent = "final_results.jsonl을 필터/검색해서 개별 PASS 레코드를 확인합니다.";
   }
 
-  
-  // 모드별 로드
+  // 테이블/디테일 초기화
+  $("failTbody").innerHTML = "";
+  $("failDetailErrors").textContent = "";
+  $("failDetailContext").textContent = "";
+  $("failDetailRaw").textContent = "";
+  selectedFailRow = null;
+
   // 컬럼/탭 라벨 (모드별)
   if (mode === "FAIL") {
     $("col1").textContent = "recordId";
@@ -251,8 +313,11 @@ function setExplorerMode(mode) {
     $("tabErrors").textContent = "errors";
     $("tabContext").textContent = "context";
     $("tabRaw").textContent = "raw";
-  } 
-  else {
+
+    // 기본 안내문구
+    $("failDetailErrors").textContent = "행을 클릭하면 errors / context / raw 가 분리되어 표시됩니다.";
+    setActiveTab("errors");
+  } else {
     $("col1").textContent = "rawRecordId";
     $("col2").textContent = "seq";
     $("col3").textContent = "equipmentId";
@@ -261,16 +326,22 @@ function setExplorerMode(mode) {
     $("tabErrors").textContent = "result";
     $("tabContext").textContent = "context";
     $("tabRaw").textContent = "events/metrics";
+
+    // 기본 안내문구
+    $("failDetailErrors").textContent = "행을 클릭하면 result / context / events&metrics 가 분리되어 표시됩니다.";
+    setActiveTab("errors"); // PASS에서도 'tabErrors' 버튼을 result로 쓰는 구조
   }
 
-// 모드별 로드
-if (mode === "FAIL") {
-  loadFails($("runSelect").value, { resetOffset: true });
-} else {
-  loadPasses($("runSelect").value, { resetOffset: true });
+  // ✅ Drill-down에서 필터 먼저 세팅하려고 autoLoad 끌 수 있음
+  if (autoLoad) {
+    if (mode === "FAIL") {
+      loadFails($("runSelect").value, { resetOffset: true });
+    } else {
+      loadPasses($("runSelect").value, { resetOffset: true });
+    }
+  }
 }
 
-}
 
 async function loadPasses(runId, { resetOffset = false } = {}) {
   if (resetOffset) passOffset = 0;
