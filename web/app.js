@@ -29,12 +29,13 @@ function clearError() {
   box.textContent = "";
 }
 
-async function fetchJSON(path) {
+async function fetchJSON(path, options = null) {
   const url = `${API_BASE}${path}`;
-  const res = await fetch(url, { cache: "no-store" });
+  const res = await fetch(url, { cache: "no-store", ...(options || {}) });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} (${url})`);
   return await res.json();
 }
+
 
 function normalizeSummary(s) {
   // summary.json 구조(프로젝트 기준)
@@ -506,8 +507,9 @@ function renderFailTable(page) {
 
 
 
-async function loadRuns() {
+async function loadRuns({ preferRunId = null } = {}) {
   const runs = await fetchJSON("/api/runs");
+
   const sel = $("runSelect");
   sel.innerHTML = "";
 
@@ -517,23 +519,48 @@ async function loadRuns() {
     opt.textContent = r;
     sel.appendChild(opt);
   }
+
+  if (preferRunId && runs.includes(preferRunId)) {
+    sel.value = preferRunId;
+  } else if (runs.length > 0) {
+    await loadSummary($("runSelect").value); // (백엔드가 최신순 정렬이면 0번이 최신)
+  }
+
   return runs;
 }
 
+async function fetchTotalsFallback(runId) {
+  const p = await fetchJSON(`/api/runs/${encodeURIComponent(runId)}/passes?offset=0&limit=1`);
+  const f = await fetchJSON(`/api/runs/${encodeURIComponent(runId)}/fails?offset=0&limit=1`);
+  const pass = Number(p.total || 0);
+  const fail = Number(f.total || 0);
+  return { total: pass + fail, pass, fail };
+}
+
+
 async function loadSummary(runId) {
   const s = await fetchJSON(`/api/runs/${encodeURIComponent(runId)}/summary`);
-  const n = normalizeSummary(s);
+  let n = normalizeSummary(s);
+
+  // ✅ summary가 비어있거나(DATA-STATUS 없음) 0으로 떨어지면, passes/fails total로 복구
+  const looksEmpty =
+    (!s || typeof s !== "object" || Object.keys(s).length === 0) ||
+    (!s["DATA-STATUS"] && !s["data_status"] && !s["DATA_STATUS"]);
+
+  if (looksEmpty || (n.total === 0 && n.pass === 0 && n.fail === 0)) {
+    const t = await fetchTotalsFallback(runId);
+    n.total = t.total;
+    n.pass = t.pass;
+    n.fail = t.fail;
+    // failBreakdown은 summary가 없으면 못 만드니 그대로(빈값) 두되, KPI는 맞춰줌
+  }
 
   $("kpiTotal").textContent = fmt(n.total);
   $("kpiPass").textContent  = fmt(n.pass);
   $("kpiFail").textContent  = fmt(n.fail);
 
-  if (n.failRate !== null && Number.isFinite(n.failRate)) {
-    $("kpiRate").textContent = `${(n.failRate * 100).toFixed(2)}%`;
-  } else {
-    const rate = (n.total > 0) ? (n.fail / n.total * 100) : null;
-    $("kpiRate").textContent = (rate === null) ? "-" : `${rate.toFixed(2)}%`;
-  }
+  const rate = (n.total > 0) ? (n.fail / n.total * 100) : null;
+  $("kpiRate").textContent = (rate === null) ? "-" : `${rate.toFixed(2)}%`;
 
   $("runMeta").textContent = `run_id: ${runId}`;
 
@@ -541,6 +568,7 @@ async function loadSummary(runId) {
   renderFailList(n.failBreakdown);
   updateFailCodeDatalist(s);
 }
+
 
 async function init() {
   clearError();
@@ -561,10 +589,46 @@ async function init() {
     $("kpiFailCard").addEventListener("click", () => setExplorerMode("FAIL"));
     setActiveTab("errors");
     setExplorerMode("FAIL");
-    
-    
 
 
+
+
+    //서버 통신 버트 관련 코드
+    $("remoteRunBtn").addEventListener("click", async () => {
+      clearError();
+    
+      // UI 잠금
+      $("remoteRunBtn").disabled = true;
+      const prevText = $("remoteRunBtn").textContent;
+      $("remoteRunBtn").textContent = "원격 실행 중...";
+    
+      try {
+        const resp = await fetchJSON("/api/remote/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}"
+        });
+    
+        const runId = resp && resp.run_id ? String(resp.run_id) : "";
+        if (!runId) throw new Error("remote run succeeded but run_id is missing");
+    
+        // run 목록 갱신 후 방금 run 선택
+        await loadRuns({ preferRunId: runId });
+        $("runSelect").value = runId;
+    
+        // summary + charts + explorer 갱신
+        await loadSummary(runId);
+        setExplorerMode(explorerMode);
+
+    
+      } catch (e) {
+        showError(e.message);
+      } finally {
+        $("remoteRunBtn").disabled = false;
+        $("remoteRunBtn").textContent = prevText;
+      }
+    });
+    
 
 
     $("passQuery").addEventListener("keydown", async (ev) => {

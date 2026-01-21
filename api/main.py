@@ -1,9 +1,101 @@
 from fastapi import FastAPI, HTTPException, Query
+import os
+import asyncio
+from datetime import datetime
 from pathlib import Path
 import json
+import websockets
 from typing import Any, Dict, List, Optional
 
 app = FastAPI()
+
+REMOTE_WS_URL = os.getenv("REMOTE_WS_URL", "").strip()
+REMOTE_WS_TOKEN = os.getenv("REMOTE_WS_TOKEN", "").strip()
+
+_remote_lock = asyncio.Lock()
+
+async def _remote_run_pipeline() -> dict:
+    if not REMOTE_WS_URL:
+        raise HTTPException(status_code=500, detail="REMOTE_WS_URL is not set")
+
+    async with websockets.connect(REMOTE_WS_URL) as ws:
+        # (옵션) 토큰 인증: server.py가 WS_TOKEN 요구하는 경우
+        if REMOTE_WS_TOKEN:
+            await ws.send(json.dumps({"type": "AUTH", "token": REMOTE_WS_TOKEN}))
+
+        await ws.send(json.dumps({"type": "RUN_PIPELINE"}))
+
+        # OUTPUT_SNAPSHOT 올 때까지 대기
+        while True:
+            msg = await ws.recv()
+            try:
+                data = json.loads(msg)
+            except json.JSONDecodeError:
+                continue
+
+            if data.get("type") == "OUTPUT_SNAPSHOT":
+                return data
+
+            # 에러를 명시적으로 던지는 타입이 있다면 처리(서버 구현에 따라)
+            if data.get("type") == "ERROR":
+                raise HTTPException(status_code=502, detail=data.get("message", "remote error"))
+
+
+def _save_snapshot(run_id: str, summary: dict, final_jsonl: str, fail_jsonl: str) -> None:
+    run_dir = RUNS_DIR / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    (run_dir / "summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+    (run_dir / "final_results.jsonl").write_text(final_jsonl or "", encoding="utf-8")
+    (run_dir / "fail_data.jsonl").write_text(fail_jsonl or "", encoding="utf-8")
+
+
+@app.post("/api/remote/run")
+async def remote_run_and_sync():
+    # 동시 실행 방지
+    if _remote_lock.locked():
+        raise HTTPException(status_code=409, detail="remote run already in progress")
+
+    async with _remote_lock:
+        snap = await _remote_run_pipeline()
+
+        run_id = snap.get("runId")
+        if not isinstance(run_id, str) or not run_id.strip():
+            # runId가 비정상이면 서버측 snapshot 포맷 문제
+            raise HTTPException(status_code=502, detail="invalid OUTPUT_SNAPSHOT: missing runId")
+
+        summary = snap.get("summary")
+        if not isinstance(summary, dict):
+            summary = {}
+
+        final_jsonl = snap.get("final_results_jsonl")
+        fail_jsonl = snap.get("fail_data_jsonl")
+        meta = snap.get("meta") if isinstance(snap.get("meta"), dict) else {}
+
+        if not isinstance(final_jsonl, str):
+            final_jsonl = ""
+        if not isinstance(fail_jsonl, str):
+            fail_jsonl = ""
+
+        _save_snapshot(run_id.strip(), summary, final_jsonl, fail_jsonl)
+        # ✅ meta도 같이 저장 (디버깅 핵심)
+        (run_dir := (RUNS_DIR / run_id.strip())).mkdir(parents=True, exist_ok=True)
+        (run_dir / "remote_meta.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+
+        # ✅ 응답에도 meta 일부 포함 (UI에서 바로 확인 가능)
+        return {
+            "run_id": run_id.strip(),
+            "client_exit_code": meta.get("client_exit_code"),
+    }
+
+
+
 
 RUNS_DIR = Path("/data/runs")
 

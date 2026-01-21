@@ -9,10 +9,12 @@ services:
       - ./api:/app
       - ./data/runs:/data/runs
     command: >
-      sh -c "pip install fastapi uvicorn &&
+      sh -c "pip install fastapi uvicorn websockets &&
         uvicorn main:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
+    environment:
+      REMOTE_WS_URL: "ws://host.docker.internal:8765"
 
 
   web:
