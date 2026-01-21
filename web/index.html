@@ -27,15 +27,15 @@
         <div class="sub">전체 레코드 수</div>
       </div>
 
-      <div class="card">
+      <div class="card kpi-clickable" id="kpiPassCard">
         <div class="label">Pass</div>
-        <div class="value mono ok" id="kpiPass">-</div>
+        <div class="value mono ok" id="kpiPass">-</div>      
         <div class="sub">성공(통과) 건수</div>
       </div>
 
-      <div class="card">
+      <div class="card kpi-clickable" id="kpiFailCard">
         <div class="label">Fail</div>
-        <div class="value mono bad" id="kpiFail">-</div>
+        <div class="value mono bad" id="kpiFail">-</div>      
         <div class="sub">실패(불합격) 건수</div>
       </div>
 
@@ -72,15 +72,18 @@
       <div class="card">
         <div class="row between">
           <div>
-            <div class="label">Fail Explorer</div>
-            <div class="sub">fail_data.jsonl을 필터/검색해서 개별 실패 레코드를 확인합니다.</div>
+            <div class="label">
+              <span id="explorerTitle">Fail Explorer</span>
+              <span class="pill" id="explorerModePill">FAIL</span>
+            </div>            
+            <div id="explorerHelp" class="sub">fail_data.jsonl을 필터/검색해서 개별 실패 레코드를 확인합니다.</div>
           </div>
           <div class="row">
             <button id="failReloadBtn" type="button">불러오기</button>
           </div>
         </div>
 
-        <div class="filters">
+        <div class="filters" id="failFilters">
           <div class="filter-item">
             <div class="label">Stage</div>
             <select id="failStage">
@@ -92,14 +95,33 @@
             </select>
           </div>
 
+          
+
           <div class="filter-item">
             <div class="label">Error Code</div>
-            <input id="failCode" placeholder="예: DUPLICATE / REQUIRED / TIME_INVERSION" />
+            <input id="failCode" list="failCodeList" placeholder="DUPLICATE / REQUIRED / TIME_INVERSION" />
+            <datalist id="failCodeList"></datalist>
           </div>
 
           <div class="filter-item grow">
             <div class="label">Search</div>
             <input id="failQuery" placeholder="recordId/rawRecordId/message 검색" />
+          </div>
+        </div>
+
+        <div class="filters" id="passFilters" style="display:none;">
+          <div class="filter-item grow">
+            <div class="label">Search</div>
+            <input id="passQuery" placeholder="recordId / seq 검색" />
+          </div>
+        
+          <div class="filter-item">
+            <div class="label">Limit</div>
+            <select id="passLimit">
+              <option value="5" selected>5</option>
+              <option value="10">10</option>
+              <option value="20">20</option>
+            </select>
           </div>
         </div>
 
@@ -115,20 +137,29 @@
           <table class="tbl">
             <thead>
               <tr>
-                <th style="width:34%;">recordId</th>
-                <th style="width:16%;">stage</th>
-                <th style="width:18%;">code</th>
-                <th>message</th>
+                <th id = "col1" style="width:34%;">recordId</th>
+                <th id = "col2" style="width:16%;">stage</th>
+                <th id = "col3" style="width:18%;">code</th>
+                <th id = "col4" >message</th>
               </tr>
             </thead>
             <tbody id="failTbody"></tbody>
           </table>
         </div>
-
         <div class="detail">
-          <div class="label">Detail</div>
-          <pre id="failDetail" class="pre muted">행을 클릭하면 여기에서 상세 JSON을 봅니다.</pre>
-        </div>
+          <div class="row between">
+            <div class="label">Detail</div>
+            <div class="detail-tabs">
+              <button id="tabErrors" type="button" class="tab-btn active">errors</button>
+              <button id="tabContext" type="button" class="tab-btn">context</button>
+              <button id="tabRaw" type="button" class="tab-btn">raw</button>
+            </div>
+          </div>
+        
+          <pre id="failDetailErrors" class="pre muted">행을 클릭하면 errors / context / raw 가 분리되어 표시됩니다.</pre>
+          <pre id="failDetailContext" class="pre muted" style="display:none;"></pre>
+          <pre id="failDetailRaw" class="pre muted" style="display:none;"></pre>
+        </div>        
       </div>
     </div>
   </div>

@@ -233,9 +233,58 @@
 }
 
 
-#failDetail{
-  max-height: none;        /* 스크롤 없이 내용만큼 늘어남 */
-  overflow: hidden;        /* 스크롤바 제거 */
-  white-space: pre-wrap;
-  word-break: break-word;
+
+/* ===== Fail Explorer UX upgrade ===== */
+
+/* 선택된 row 강조 */
+.tbl tbody tr.selected{
+  outline: 2px solid rgba(148,163,184,0.45);
+  outline-offset: -2px;
+  background:#0b1222;
+}
+
+/* error code 뱃지 */
+.code-badge{
+  display:inline-flex;
+  align-items:center;
+  padding:2px 8px;
+  border-radius:999px;
+  font-size:12px;
+  border:1px solid var(--border);
+  background:#0b1222;
+  white-space:nowrap;
+}
+
+.code-dup{ color:#f97316; border-color:rgba(249,115,22,0.5); }
+.code-req{ color:#eab308; border-color:rgba(234,179,8,0.5); }
+.code-type{ color:#a855f7; border-color:rgba(168,85,247,0.5); }
+.code-time{ color:#ef4444; border-color:rgba(239,68,68,0.55); }
+.code-other{ color:var(--muted); }
+
+/* Detail 탭 */
+.detail-tabs{ display:flex; gap:8px; }
+.tab-btn{
+  background:#0e1626;
+  border:1px solid var(--border);
+  color:var(--muted);
+  padding:6px 10px;
+  border-radius:999px;
+  font-size:12px;
+  cursor:pointer;
+}
+.tab-btn.active{
+  color:var(--text);
+  border-color:#2b3b64;
+}
+
+/* KPI 카드 클릭 가능 시그널 */
+.card.kpi-clickable{
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.card.kpi-clickable:hover{
+  transform: translateY(-3px);
+  box-shadow: 0 10px 28px rgba(0,0,0,0.35);
+  background: linear-gradient(180deg, #0f1b33, #0b1222);
 }

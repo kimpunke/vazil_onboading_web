@@ -4,10 +4,14 @@ const API_BASE = (window.APP_CONFIG && typeof window.APP_CONFIG.API_BASE === "st
   : "";
 
 let pieChart = null;
-
+let explorerMode = "FAIL"; // FAIL OR PASS
 let failOffset = 0;
 const failLimit = 5;
+let passOffset = 0;
 let lastFailRunId = null;
+let selectedFailRow = null;
+let activeDetailTab = "errors";
+
 
 function fmt(n) {
   if (n === null || n === undefined) return "-";
@@ -68,6 +72,32 @@ function renderFailList(failBreakdown) {
     el.appendChild(row);
   }
 }
+
+function updateFailCodeDatalist(summary){
+  const dl = document.getElementById("failCodeList");
+  if (!dl) return;
+
+  // summary.errors는 { duplicate_error: 11, parse_error: 1 ... } 형태임
+  // 여기서 "Error Code"와 1:1 매칭이 안 될 수도 있어서,
+  // 우선 "자주 쓰는 코드" + "현재 run에서 실제로 존재한 코드"를 합치는 방식이 안정적이다.
+
+  const base = ["DUPLICATE", "REQUIRED", "TYPE", "MIN_ITEMS", "TIME_INVERSION", "PARSE_ERROR"];
+  const uniq = new Set(base);
+
+  // (가능하면) failList keys도 후보로 넣기
+  if (summary && summary.errors && typeof summary.errors === "object") {
+    Object.keys(summary.errors).forEach(k => uniq.add(String(k).toUpperCase()));
+  }
+
+  dl.innerHTML = "";
+  [...uniq].sort().forEach(code => {
+    const opt = document.createElement("option");
+    opt.value = code;
+    dl.appendChild(opt);
+  });
+}
+
+
 
 function renderDonutChart(pass, failBreakdown) {
   const failEntries = Object.entries(failBreakdown || {})
@@ -153,6 +183,172 @@ function _short(s, n = 120) {
   if (typeof s !== "string") return "-";
   return s.length > n ? (s.slice(0, n) + "…") : s;
 }
+function codeClass(code){
+  const c = String(code || "").toUpperCase();
+  if (c.includes("DUPLICATE")) return "code-dup";
+  if (c.includes("REQUIRED")) return "code-req";
+  if (c.includes("TYPE")) return "code-type";
+  if (c.includes("TIME_INVERSION")) return "code-time";
+  return "code-other";
+}
+
+function pretty(obj){
+  try { return JSON.stringify(obj, null, 2); }
+  catch { return String(obj); }
+}
+
+function setActiveTab(tab){
+  activeDetailTab = tab;
+
+  $("tabErrors").classList.toggle("active", tab === "errors");
+  $("tabContext").classList.toggle("active", tab === "context");
+  $("tabRaw").classList.toggle("active", tab === "raw");
+
+  $("failDetailErrors").style.display = tab === "errors" ? "block" : "none";
+  $("failDetailContext").style.display = tab === "context" ? "block" : "none";
+  $("failDetailRaw").style.display = tab === "raw" ? "block" : "none";
+}
+
+function setExplorerMode(mode) {
+  explorerMode = mode;
+
+  // 헤더 텍스트/뱃지
+  $("explorerTitle").textContent = (mode === "FAIL") ? "Fail Explorer" : "Pass Explorer";
+  $("explorerModePill").textContent = mode;
+
+  // 필터 토글
+  $("failFilters").style.display = (mode === "FAIL") ? "flex" : "none";
+  $("passFilters").style.display = (mode === "PASS") ? "flex" : "none";
+
+  // 테이블/디테일 초기화
+  $("failTbody").innerHTML = "";
+  $("failDetailErrors").textContent = "";
+  $("failDetailContext").textContent = "";
+  $("failDetailRaw").textContent = "";
+  selectedFailRow = null;
+  if (mode === "PASS") {
+    $("failDetailErrors").textContent = "행을 클릭하면 result / context / events&metrics 가 분리되어 표시됩니다.";
+    setActiveTab("errors"); // result 탭(= tabErrors id)로 기본 활성
+  }
+  setActiveTab(activeDetailTab);
+
+  // Explorer 안내 문구(모드별)
+  if (mode === "FAIL") {
+    $("explorerHelp").textContent = "fail_data.jsonl을 필터/검색해서 개별 실패 레코드를 확인합니다.";
+  } else {
+    $("explorerHelp").textContent = "final_results.jsonl을 필터/검색해서 개별 PASS 레코드를 확인합니다.";
+  }
+
+  
+  // 모드별 로드
+  // 컬럼/탭 라벨 (모드별)
+  if (mode === "FAIL") {
+    $("col1").textContent = "recordId";
+    $("col2").textContent = "stage";
+    $("col3").textContent = "code";
+    $("col4").textContent = "message";
+
+    $("tabErrors").textContent = "errors";
+    $("tabContext").textContent = "context";
+    $("tabRaw").textContent = "raw";
+  } 
+  else {
+    $("col1").textContent = "rawRecordId";
+    $("col2").textContent = "seq";
+    $("col3").textContent = "equipmentId";
+    $("col4").textContent = "summary";
+
+    $("tabErrors").textContent = "result";
+    $("tabContext").textContent = "context";
+    $("tabRaw").textContent = "events/metrics";
+  }
+
+// 모드별 로드
+if (mode === "FAIL") {
+  loadFails($("runSelect").value, { resetOffset: true });
+} else {
+  loadPasses($("runSelect").value, { resetOffset: true });
+}
+
+}
+
+async function loadPasses(runId, { resetOffset = false } = {}) {
+  if (resetOffset) passOffset = 0;
+
+  const limit = Math.min(5000, Math.max(1, Number($("passLimit").value || 5)));
+  const q = ($("passQuery").value || "").trim();
+
+  const params = new URLSearchParams();
+  params.set("offset", String(passOffset));
+  params.set("limit", String(limit));
+  if (q) params.set("q", q);
+
+  const data = await fetchJSON(`/api/runs/${encodeURIComponent(runId)}/passes?${params.toString()}`);
+  renderPassTable(data);
+}
+
+function renderPassTable(page) {
+  const tbody = $("failTbody");
+  tbody.innerHTML = "";
+
+  const total = Number(page.total || 0);
+  const offset = Number(page.offset || 0);
+  const limit = Number(page.limit || 0);
+  const items = Array.isArray(page.items) ? page.items : [];
+
+  const from = total === 0 ? 0 : (offset + 1);
+  const to = Math.min(offset + items.length, total);
+  $("failPageMeta").textContent = `표시: ${fmt(from)} ~ ${fmt(to)} / 전체 ${fmt(total)}`;
+
+  $("failPrevBtn").disabled = offset <= 0;
+  $("failNextBtn").disabled = (offset + limit) >= total;
+
+  if (items.length === 0) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td class="muted" colspan="4">조건에 맞는 pass 레코드가 없습니다.</td>`;
+    tbody.appendChild(tr);
+
+    $("failDetailErrors").textContent = "행을 클릭하면 result / context / events&metrics 가 분리되어 표시됩니다.";
+    $("failDetailContext").textContent = "";
+    $("failDetailRaw").textContent = "";
+    setActiveTab(activeDetailTab);
+    return;
+  }
+
+  for (const rec of items) {
+    const ctx = (rec && typeof rec === "object" && rec.context && typeof rec.context === "object") ? rec.context : {};
+    const rawRecordId = (typeof ctx.rawRecordId === "string") ? ctx.rawRecordId : "-";
+    const seq = (ctx.seq !== undefined && ctx.seq !== null) ? String(ctx.seq) : "-";
+    const equipmentId = (typeof ctx.equipmentId === "string") ? ctx.equipmentId : "-";
+
+    const events = Array.isArray(rec.events) ? rec.events : [];
+    const firstEvent = (events[0] && typeof events[0] === "object" && typeof events[0].eventType === "string") ? events[0].eventType : "-";
+    const productType = (typeof ctx.productType === "string") ? ctx.productType : "-";
+    const summary = `event=${firstEvent}, product=${productType}, events=${events.length}`;
+
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="mono">${rawRecordId}</td>
+      <td class="mono">${seq}</td>
+      <td class="mono">${equipmentId}</td>
+      <td title="${String(summary).replaceAll('"','&quot;')}">${_short(summary, 140)}</td>
+    `;
+
+    tr.addEventListener("click", () => {
+      if (selectedFailRow && selectedFailRow !== tr) selectedFailRow.classList.remove("selected");
+      selectedFailRow = tr;
+      tr.classList.add("selected");
+
+      $("failDetailErrors").textContent = pretty(rec || "(없음)");
+      $("failDetailContext").textContent = pretty(ctx || "(없음)");
+      $("failDetailRaw").textContent = pretty({ events: rec.events || [], metrics: rec.metrics || {} });
+      setActiveTab(activeDetailTab);
+    });
+
+    tbody.appendChild(tr);
+  }
+}
+
 
 async function loadFails(runId, { resetOffset = false } = {}) {
   if (resetOffset) failOffset = 0;
@@ -175,7 +371,6 @@ async function loadFails(runId, { resetOffset = false } = {}) {
 
 function renderFailTable(page) {
   const tbody = $("failTbody");
-  const detail = $("failDetail");
   tbody.innerHTML = "";
 
   const total = Number(page.total || 0);
@@ -187,7 +382,6 @@ function renderFailTable(page) {
   const to = Math.min(offset + items.length, total);
   $("failPageMeta").textContent = `표시: ${fmt(from)} ~ ${fmt(to)} / 전체 ${fmt(total)}`;
 
-  // 버튼 활성/비활성
   $("failPrevBtn").disabled = offset <= 0;
   $("failNextBtn").disabled = (offset + limit) >= total;
 
@@ -195,7 +389,11 @@ function renderFailTable(page) {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td class="muted" colspan="4">조건에 맞는 fail 레코드가 없습니다.</td>`;
     tbody.appendChild(tr);
-    detail.textContent = "행을 클릭하면 여기에서 상세 JSON을 봅니다.";
+
+    $("failDetailErrors").textContent = "행을 클릭하면 errors / context / raw 가 분리되어 표시됩니다.";
+    $("failDetailContext").textContent = "";
+    $("failDetailRaw").textContent = "";
+    setActiveTab(activeDetailTab);
     return;
   }
 
@@ -204,26 +402,37 @@ function renderFailTable(page) {
     const stage = (rec && rec.stage) ? String(rec.stage) : "-";
     const code = _firstErrorCode(rec);
 
-    const tr = document.createElement("tr");
     const fullMsg = _firstErrorMessage(rec);
     const msg = _short(fullMsg, 140);
-    
+
+    const tr = document.createElement("tr");
+    const badgeCls = codeClass(code);
+
     tr.innerHTML = `
       <td class="mono">${recordId}</td>
       <td class="mono">${stage}</td>
-      <td class="mono bad">${code}</td>
+      <td><span class="code-badge ${badgeCls}">${code}</span></td>
       <td title="${String(fullMsg || "").replaceAll('"','&quot;')}">${msg}</td>
     `;
-    
 
     tr.addEventListener("click", () => {
-      const pretty = JSON.stringify(rec, null, 2);
-      detail.textContent = pretty;
+      if (selectedFailRow && selectedFailRow !== tr) {
+        selectedFailRow.classList.remove("selected");
+      }
+      selectedFailRow = tr;
+      tr.classList.add("selected");
+
+      $("failDetailErrors").textContent = pretty(rec.errors || "(없음)");
+      $("failDetailContext").textContent = pretty(rec.context || rec.analyzed?.context || "(없음)");
+      $("failDetailRaw").textContent = pretty(rec.raw || "(없음)");
+
+      setActiveTab(activeDetailTab);
     });
 
     tbody.appendChild(tr);
   }
 }
+
 
 
 async function loadRuns() {
@@ -259,6 +468,7 @@ async function loadSummary(runId) {
 
   renderDonutChart(n.pass, n.failBreakdown);
   renderFailList(n.failBreakdown);
+  updateFailCodeDatalist(s);
 }
 
 async function init() {
@@ -271,15 +481,112 @@ async function init() {
     }
 
     const sel = $("runSelect");
+    sel.value = runs[runs.length - 1]; // 또는 runs[0]
     await loadSummary($("runSelect").value);
-    await loadFails($("runSelect").value, { resetOffset: true });
+    $("tabErrors").addEventListener("click", () => setActiveTab("errors"));
+    $("tabContext").addEventListener("click", () => setActiveTab("context"));
+    $("tabRaw").addEventListener("click", () => setActiveTab("raw"));
+    $("kpiPassCard").addEventListener("click", () => setExplorerMode("PASS"));
+    $("kpiFailCard").addEventListener("click", () => setExplorerMode("FAIL"));
+    setActiveTab("errors");
+    setExplorerMode("FAIL");
     
+    
+
+
+
+
+    $("passQuery").addEventListener("keydown", async (ev) => {
+      if (ev.key === "Enter") {
+        if (explorerMode !== "PASS") return;
+        clearError();
+        try { await loadPasses($("runSelect").value, { resetOffset: true }); }
+        catch (e) { showError(e.message); }
+      }
+    });
+    
+    $("passLimit").addEventListener("change", async () => {
+      if (explorerMode !== "PASS") return;
+      clearError();
+      try { await loadPasses($("runSelect").value, { resetOffset: true }); }
+      catch (e) { showError(e.message); }
+    });
+    
+    // Fail Explorer controls
+    $("failReloadBtn").addEventListener("click", async () => {
+      clearError();
+      try {
+        if (explorerMode === "FAIL") {
+          await loadFails($("runSelect").value, { resetOffset: true });
+        } else {
+          await loadPasses($("runSelect").value, { resetOffset: true });
+        }
+      } catch (e) { showError(e.message); }
+    });
+    
+
+    $("failPrevBtn").addEventListener("click", async () => {
+      clearError();
+      try {
+        if (explorerMode === "FAIL") {
+          failOffset = Math.max(0, failOffset - failLimit);
+          await loadFails($("runSelect").value);
+        } else {
+          const step = Math.min(5000, Math.max(1, Number($("passLimit").value || 5)));
+          passOffset = Math.max(0, passOffset - step);
+          await loadPasses($("runSelect").value);
+        }
+      } catch (e) { showError(e.message); }
+    });
+    
+    $("failNextBtn").addEventListener("click", async () => {
+      clearError();
+      try {
+        if (explorerMode === "FAIL") {
+          failOffset = failOffset + failLimit;
+          await loadFails($("runSelect").value);
+        } else {
+          const step = Math.min(5000, Math.max(1, Number($("passLimit").value || 5)));
+          passOffset = passOffset + step;
+          await loadPasses($("runSelect").value);
+        }
+      } catch (e) { showError(e.message); }
+    });
+    
+    
+
+    // Enter 키로 검색 실행
+    $("failCode").addEventListener("keydown", async (ev) => {
+      if (ev.key === "Enter") {
+        if (explorerMode !== "FAIL") return;
+        clearError();
+        try { await loadFails($("runSelect").value, { resetOffset: true }); }
+        catch (e) { showError(e.message); }
+      }
+    });
+    $("failQuery").addEventListener("keydown", async (ev) => {
+      if (ev.key === "Enter") {
+        if (explorerMode !== "FAIL") return;
+        clearError();
+        try { await loadFails($("runSelect").value, { resetOffset: true }); }
+        catch (e) { showError(e.message); }
+      }
+    });
+
+    // stage 변경 시 즉시 반영
+    $("failStage").addEventListener("change", async () => {
+      if (explorerMode !== "FAIL") return;
+      clearError();
+      try { await loadFails($("runSelect").value, { resetOffset: true }); }
+      catch (e) { showError(e.message); }
+    });
+
 
     sel.addEventListener("change", async () => {
       clearError();
       try {
         await loadSummary($("runSelect").value);
-        await loadFails($("runSelect").value, { resetOffset: true });
+        setExplorerMode(explorerMode);
       } catch (e) {
         showError(e.message);
       }
@@ -293,61 +600,17 @@ async function init() {
         const newRuns = await loadRuns();
         if (newRuns.includes(current)) $("runSelect").value = current;
         await loadSummary($("runSelect").value);
+        setExplorerMode(explorerMode);        
       } catch (e) {
         showError(e.message);
       }
     });
-
   } catch (e) {
     showError(e.message);
   }
 }
 
-// Fail Explorer controls
-$("failReloadBtn").addEventListener("click", async () => {
-  clearError();
-  try { await loadFails($("runSelect").value, { resetOffset: true }); }
-  catch (e) { showError(e.message); }
-});
 
-$("failPrevBtn").addEventListener("click", async () => {
-  clearError();
-  try {
-    failOffset = Math.max(0, failOffset - failLimit);
-    await loadFails($("runSelect").value);
-  } catch (e) { showError(e.message); }
-});
-
-$("failNextBtn").addEventListener("click", async () => {
-  clearError();
-  try {
-    failOffset = failOffset + failLimit;
-    await loadFails($("runSelect").value);
-  } catch (e) { showError(e.message); }
-});
-
-// Enter 키로 검색 실행
-$("failCode").addEventListener("keydown", async (ev) => {
-  if (ev.key === "Enter") {
-    clearError();
-    try { await loadFails($("runSelect").value, { resetOffset: true }); }
-    catch (e) { showError(e.message); }
-  }
-});
-$("failQuery").addEventListener("keydown", async (ev) => {
-  if (ev.key === "Enter") {
-    clearError();
-    try { await loadFails($("runSelect").value, { resetOffset: true }); }
-    catch (e) { showError(e.message); }
-  }
-});
-
-// stage 변경 시 즉시 반영
-$("failStage").addEventListener("change", async () => {
-  clearError();
-  try { await loadFails($("runSelect").value, { resetOffset: true }); }
-  catch (e) { showError(e.message); }
-});
 
 
 init();
