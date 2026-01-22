@@ -291,3 +291,62 @@
 
 .stage-item.clickable { cursor: pointer; }
 .stage-item.clickable:hover { filter: brightness(1.08); }
+
+
+/* ===== Remote Run (icon -> expand on hover) ===== */
+.icon-btn{
+  display:inline-flex;
+  align-items:center;
+  gap:0;                 /* 기본 상태에서 텍스트는 숨김 */
+  padding:10px 12px;
+  border-radius:12px;
+  background:#0e1626;
+  border:1px solid var(--border);
+  color:var(--text);
+  cursor:pointer;
+
+  /* “확장”이 자연스럽게 보이도록 */
+  transition: border-color .15s ease, background-color .15s ease;
+}
+
+.icon-btn:hover{ border-color:#2b3b64; }
+
+.icon-btn .icon{
+  display:inline-flex;
+  width:18px;
+  justify-content:center;
+}
+
+.icon-btn .txt{
+  /* 기본: 안 보이게(공간도 거의 0) */
+  display:inline-block;
+  max-width:0;
+  opacity:0;
+  overflow:hidden;
+  white-space:nowrap;
+
+  /* hover 시 자연스럽게 펼쳐지게 */
+  transition: max-width .18s ease, opacity .18s ease, margin-left .18s ease;
+  margin-left:0;
+}
+
+.icon-btn:hover .txt{
+  max-width:140px;  /* 문구 길이에 맞춰 조절 가능 */
+  opacity:1;
+  margin-left:8px;
+}
+
+/* 로딩 상태: 클릭 후 스핀 */
+.icon-btn.loading{
+  opacity:0.8;
+  cursor:not-allowed;
+}
+
+.icon-btn.loading .icon{
+  animation: spin .9s linear infinite;
+}
+
+@keyframes spin{
+  from{ transform: rotate(0deg); }
+  to  { transform: rotate(360deg); }
+}

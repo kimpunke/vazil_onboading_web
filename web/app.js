@@ -597,35 +597,35 @@ async function init() {
     $("remoteRunBtn").addEventListener("click", async () => {
       clearError();
     
-      // UI 잠금
-      $("remoteRunBtn").disabled = true;
-      const prevText = $("remoteRunBtn").textContent;
-      $("remoteRunBtn").textContent = "원격 실행 중...";
-    
+      const btn = $("remoteRunBtn");
+      btn.disabled = true;
+      btn.classList.add("loading");
+
+      const txtEl = btn.querySelector(".txt");
+      const prevTxt = txtEl ? txtEl.textContent : null;
+      if (txtEl) txtEl.textContent = "실행 중...";
+
       try {
         const resp = await fetchJSON("/api/remote/run", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: "{}"
         });
-    
+
         const runId = resp && resp.run_id ? String(resp.run_id) : "";
         if (!runId) throw new Error("remote run succeeded but run_id is missing");
-    
-        // run 목록 갱신 후 방금 run 선택
+
         await loadRuns({ preferRunId: runId });
         $("runSelect").value = runId;
-    
-        // summary + charts + explorer 갱신
+
         await loadSummary(runId);
         setExplorerMode(explorerMode);
-
-    
       } catch (e) {
         showError(e.message);
       } finally {
-        $("remoteRunBtn").disabled = false;
-        $("remoteRunBtn").textContent = prevText;
+        btn.disabled = false;
+        btn.classList.remove("loading");
+        if (txtEl && prevTxt !== null) txtEl.textContent = prevTxt;
       }
     });
     
@@ -744,7 +744,6 @@ async function init() {
     showError(e.message);
   }
 }
-
 
 
 
