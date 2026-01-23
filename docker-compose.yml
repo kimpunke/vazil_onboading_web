@@ -13,9 +13,13 @@ services:
         uvicorn main:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
+
+    # EC2(Linux)에서 host.docker.internal을 쓰기 위한 핵심
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     environment:
       REMOTE_WS_URL: "ws://host.docker.internal:8765"
-
 
   web:
     image: nginx:alpine

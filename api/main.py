@@ -14,7 +14,7 @@ REMOTE_WS_TOKEN = os.getenv("REMOTE_WS_TOKEN", "").strip()
 
 _remote_lock = asyncio.Lock()
 
-async def _remote_run_pipeline() -> dict:
+async def _remote_run_pipeline(input_sel: str = "dummy") -> dict:
     if not REMOTE_WS_URL:
         raise HTTPException(status_code=500, detail="REMOTE_WS_URL is not set")
 
@@ -23,15 +23,18 @@ async def _remote_run_pipeline() -> dict:
         if REMOTE_WS_TOKEN:
             await ws.send(json.dumps({"type": "AUTH", "token": REMOTE_WS_TOKEN}))
 
-        await ws.send(json.dumps({"type": "RUN_PIPELINE"}))
+        await ws.send(json.dumps({"type": "RUN_PIPELINE", "input" : input_sel}))
 
         # OUTPUT_SNAPSHOT 올 때까지 대기
         while True:
             msg = await ws.recv()
+            if isinstance(msg, (bytes, bytearray)):
+                msg = msg.decode("utf-8", errors="replace")
             try:
                 data = json.loads(msg)
             except json.JSONDecodeError:
                 continue
+
 
             if data.get("type") == "OUTPUT_SNAPSHOT":
                 return data
@@ -39,6 +42,65 @@ async def _remote_run_pipeline() -> dict:
             # 에러를 명시적으로 던지는 타입이 있다면 처리(서버 구현에 따라)
             if data.get("type") == "ERROR":
                 raise HTTPException(status_code=502, detail=data.get("message", "remote error"))
+
+
+async def _remote_get_ingest_status() -> dict:
+    if not REMOTE_WS_URL:
+        raise HTTPException(status_code=500, detail="REMOTE_WS_URL is not set")
+
+    async with websockets.connect(REMOTE_WS_URL) as ws:
+        if REMOTE_WS_TOKEN:
+            await ws.send(json.dumps({"type": "AUTH", "token": REMOTE_WS_TOKEN}))
+
+        await ws.send(json.dumps({"type": "GET_INGEST_STATUS"}))
+
+        # INGEST_STATUS 올 때까지 대기
+        while True:
+            msg = await ws.recv()
+            if isinstance(msg, (bytes, bytearray)):
+                msg = msg.decode("utf-8", errors="replace")
+            try:
+                data = json.loads(msg)
+            except json.JSONDecodeError:
+                continue
+
+
+            if data.get("type") == "INGEST_STATUS":
+                return data
+
+            if data.get("type") == "ERROR":
+                raise HTTPException(status_code=502, detail=data.get("message", "remote error"))
+
+
+RUNS_DIR = Path("/data/runs")
+
+
+
+async def _remote_plc_control(cmd: str) -> dict:
+    if not REMOTE_WS_URL:
+        raise HTTPException(status_code=500, detail="REMOTE_WS_URL is not set")
+
+    async with websockets.connect(REMOTE_WS_URL) as ws:
+        if REMOTE_WS_TOKEN:
+            await ws.send(json.dumps({"type": "AUTH", "token": REMOTE_WS_TOKEN}))
+
+        await ws.send(json.dumps({"type": cmd}))
+
+        while True:
+            msg = await ws.recv()
+            if isinstance(msg, (bytes, bytearray)):
+                msg = msg.decode("utf-8", errors="replace")
+            try:
+                data = json.loads(msg)
+            except json.JSONDecodeError:
+                continue
+
+            if data.get("type") == "PLC_STATUS":
+                return data
+
+            if data.get("type") == "ERROR":
+                raise HTTPException(status_code=502, detail=data.get("message", "remote error"))
+
 
 
 def _save_snapshot(run_id: str, summary: dict, final_jsonl: str, fail_jsonl: str) -> None:
@@ -54,13 +116,14 @@ def _save_snapshot(run_id: str, summary: dict, final_jsonl: str, fail_jsonl: str
 
 
 @app.post("/api/remote/run")
-async def remote_run_and_sync():
+async def remote_run_and_sync(input: str = Query("dummy")):
     # 동시 실행 방지
     if _remote_lock.locked():
         raise HTTPException(status_code=409, detail="remote run already in progress")
 
     async with _remote_lock:
-        snap = await _remote_run_pipeline()
+        input_sel = "live" if input == "live" else "dummy"
+        snap = await _remote_run_pipeline(input_sel)
 
         run_id = snap.get("runId")
         if not isinstance(run_id, str) or not run_id.strip():
@@ -92,12 +155,29 @@ async def remote_run_and_sync():
         return {
             "run_id": run_id.strip(),
             "client_exit_code": meta.get("client_exit_code"),
-    }
+            "meta" : meta,
+        }
+
+
+@app.get("/api/realtime/status")
+async def realtime_status():
+    # 단순 상태 조회는 락 없이 허용(폴링)
+    # (REMOTE_WS_URL 미설정이면 _remote_get_ingest_status()에서 500 처리)
+    return await _remote_get_ingest_status()
+
+@app.post("/api/realtime/start")
+async def realtime_start():
+    return await _remote_plc_control("PLC_START")
+
+
+@app.post("/api/realtime/stop")
+async def realtime_stop():
+    return await _remote_plc_control("PLC_STOP")
 
 
 
 
-RUNS_DIR = Path("/data/runs")
+
 
 @app.get("/api/runs")
 def list_runs():

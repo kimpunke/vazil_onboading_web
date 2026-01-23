@@ -350,3 +350,12 @@
   from{ transform: rotate(0deg); }
   to  { transform: rotate(360deg); }
 }
+
+
+/* realtime pill text 조금 더 촘촘하게 */
+#ingestPill{
+  max-width: 520px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

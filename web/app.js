@@ -6,6 +6,14 @@ const API_BASE = (window.APP_CONFIG && typeof window.APP_CONFIG.API_BASE === "st
 let pieChart = null;
 let explorerMode = "FAIL"; // FAIL OR PASS
 let failOffset = 0;
+  
+const REALTIME_RUN_ID = "__REALTIME__";
+let realtimeTimer = null;
+let lastIngestTotalWritten = null;
+let lastIngestTickMs = null;
+  
+let plcRunning = false; // UI 기준 PLC 동작 상태(실제 프로세스 제어는 다음 단계)
+
 const failLimit = 5;
 let passOffset = 0;
 let lastFailRunId = null;
@@ -32,7 +40,24 @@ function clearError() {
 async function fetchJSON(path, options = null) {
   const url = `${API_BASE}${path}`;
   const res = await fetch(url, { cache: "no-store", ...(options || {}) });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText} (${url})`);
+
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const ct = res.headers.get("content-type") || "";
+      if (ct.includes("application/json")) {
+        const j = await res.json();
+        detail = (j && (j.detail || j.message)) ? String(j.detail || j.message) : JSON.stringify(j);
+      } else {
+        detail = await res.text();
+      }
+    } catch (_) {
+      detail = "";
+    }
+    const extra = detail ? ` - ${detail}` : "";
+    throw new Error(`${res.status} ${res.statusText} (${url})${extra}`);
+  }
+
   return await res.json();
 }
 
@@ -513,6 +538,12 @@ async function loadRuns({ preferRunId = null } = {}) {
   const sel = $("runSelect");
   sel.innerHTML = "";
 
+  // 실시간 옵션(항상 상단)
+  const rt = document.createElement("option");
+  rt.value = REALTIME_RUN_ID;
+  rt.textContent = "실시간";
+  sel.appendChild(rt);
+
   for (const r of runs) {
     const opt = document.createElement("option");
     opt.value = r;
@@ -520,10 +551,10 @@ async function loadRuns({ preferRunId = null } = {}) {
     sel.appendChild(opt);
   }
 
+
   if (preferRunId && runs.includes(preferRunId)) {
     sel.value = preferRunId;
   } else if (runs.length > 0) {
-    await loadSummary($("runSelect").value); // (백엔드가 최신순 정렬이면 0번이 최신)
   }
 
   return runs;
@@ -569,6 +600,76 @@ async function loadSummary(runId) {
   updateFailCodeDatalist(s);
 }
 
+function setRealtimeUI(on) {
+  $("remoteRunBtn").style.display = on ? "none" : "";
+  $("realtimePlayBtn").style.display = on ? "" : "none";
+  $("realtimeStopBtn").style.display = (on && plcRunning) ? "" : "none";
+  $("ingestPill").style.display = on ? "" : "none";
+  
+  if (on) {
+    $("runMeta").textContent = `mode: realtime`;
+    // KPI는 “마지막 run” 기반이 아니라면 의미가 애매하니 일단 비움(원하면 유지하도록 변경 가능)
+    $("kpiTotal").textContent = "-";
+    $("kpiPass").textContent  = "-";
+    $("kpiFail").textContent  = "-";
+    $("kpiRate").textContent  = "-";
+    $("failList").innerHTML = `<div class="stage-item"><span class="label">실시간 모드에서는 ingest 상태를 표시합니다.</span><span class="mono">-</span></div>`;
+    if (pieChart) { pieChart.destroy(); pieChart = null; }
+  } else {
+    $("ingestPill").textContent = "";
+    lastIngestTotalWritten = null;
+    lastIngestTickMs = null;
+    plcRunning = false;
+    $("realtimeStopBtn").style.display = "none";
+  }  
+}
+
+function startRealtimePolling() {
+  stopRealtimePolling();
+
+  const tick = async () => {
+    try {
+      const s = await fetchJSON("/api/realtime/status");
+
+      const totalWritten = Number(s.totalWritten ?? 0);
+      const totalDropped = Number(s.totalDropped ?? 0);
+      const lastSeenUtc = String(s.lastSeenUtc ?? "");
+      const lastError = String(s.lastError ?? "");
+
+      // 수신 속도(records/sec) 계산
+      const nowMs = Date.now();
+      let rps = null;
+      if (lastIngestTotalWritten !== null && lastIngestTickMs !== null) {
+        const dt = (nowMs - lastIngestTickMs) / 1000.0;
+        const dw = totalWritten - lastIngestTotalWritten;
+        if (dt > 0) rps = dw / dt;
+      }
+      lastIngestTotalWritten = totalWritten;
+      lastIngestTickMs = nowMs;
+
+      const rateTxt = (rps === null) ? "" : ` | ${rps.toFixed(1)} rec/s`;
+      const errTxt = lastError ? ` | err=${lastError}` : "";
+
+      $("ingestPill").textContent =
+        `written=${fmt(totalWritten)} dropped=${fmt(totalDropped)} lastSeen=${lastSeenUtc || "-"}${rateTxt}${errTxt}`;
+    } catch (e) {
+      // 실시간 폴링은 에러를 치명으로 보지 않고 pill에만 표시
+      $("ingestPill").textContent = `ingest: error (${e.message})`;
+    }
+  };
+
+  tick();
+  realtimeTimer = setInterval(tick, 1000);
+}
+
+function stopRealtimePolling() {
+  if (realtimeTimer) {
+    clearInterval(realtimeTimer);
+    realtimeTimer = null;
+  }
+}
+
+
 
 async function init() {
   clearError();
@@ -592,6 +693,83 @@ async function init() {
 
 
 
+    $("realtimePlayBtn").addEventListener("click", async () => {
+      clearError();
+    
+      const btn = $("realtimePlayBtn");
+      btn.disabled = true;
+      btn.classList.add("loading");
+    
+      const txtEl = btn.querySelector(".txt");
+      const prevTxt = txtEl ? txtEl.textContent : null;
+      if (txtEl) txtEl.textContent = "PLC 시작됨";
+    
+      try {
+
+        const resp = await fetchJSON("/api/realtime/start", { method: "POST" });
+        const st = resp && resp.status ? String(resp.status) : "";
+
+        if (st !== "started" && st !== "already_running") {
+          throw new Error(`PLC start failed: ${st || "unknown"}`);
+        }
+
+        plcRunning = true;
+
+        const stopBtn = document.getElementById("realtimeStopBtn");
+        if (stopBtn) stopBtn.style.display = "";
+
+    
+      } catch (e) {
+        showError(e.message);
+        if (txtEl && prevTxt !== null) txtEl.textContent = prevTxt;
+      } finally {
+        btn.disabled = false;
+        btn.classList.remove("loading");
+        // 텍스트는 "PLC 시작됨" 유지(원하면 prevTxt로 복구 가능)
+      }
+    });
+    
+
+    $("realtimeStopBtn").addEventListener("click", async () => {
+      clearError();
+    
+      const btn = $("realtimeStopBtn");
+      btn.disabled = true;
+      btn.classList.add("loading");
+    
+      const txtEl = btn.querySelector(".txt");
+      const prevTxt = txtEl ? txtEl.textContent : null;
+      if (txtEl) txtEl.textContent = "정지됨";
+    
+      try {
+        const resp = await fetchJSON("/api/realtime/stop", { method: "POST" });
+        const st = resp && resp.status ? String(resp.status) : "";
+
+        if (st !== "stopped" && st !== "already_stopped") {
+          throw new Error(`PLC stop failed: ${st || "unknown"}`);
+        }
+
+        plcRunning = false;
+        btn.style.display = "none";
+        stopRealtimePolling();
+        $("ingestPill").textContent = "ingest: stopped";
+    
+        // 폴링은 유지(정지 후에도 written/dropped가 멈춘 상태를 보여주는 게 자연스러움)
+        if (!realtimeTimer) startRealtimePolling();
+    
+        // 다음 단계에서 /api/realtime/stop 만들면 여기서 호출:
+        // await fetchJSON("/api/realtime/stop", { method: "POST" });
+    
+      } catch (e) {
+        showError(e.message);
+        if (txtEl && prevTxt !== null) txtEl.textContent = prevTxt;
+      } finally {
+        btn.disabled = false;
+        btn.classList.remove("loading");
+      }
+    });
+    
+
 
     //서버 통신 버트 관련 코드
     $("remoteRunBtn").addEventListener("click", async () => {
@@ -606,7 +784,7 @@ async function init() {
       if (txtEl) txtEl.textContent = "실행 중...";
 
       try {
-        const resp = await fetchJSON("/api/remote/run", {
+        const resp = await fetchJSON("/api/remote/run?input=dummy", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: "{}"
@@ -720,12 +898,23 @@ async function init() {
     sel.addEventListener("change", async () => {
       clearError();
       try {
-        await loadSummary($("runSelect").value);
+        const v = $("runSelect").value;
+
+        if (v === REALTIME_RUN_ID) {
+          setRealtimeUI(true);
+          stopRealtimePolling();
+          return;
+        }
+
+        // realtime -> run으로 돌아올 때
+        stopRealtimePolling();
+        setRealtimeUI(false);
+
+        await loadSummary(v);
         setExplorerMode(explorerMode);
-      } catch (e) {
-        showError(e.message);
-      }
+      } catch (e) { showError(e.message); }
     });
+
     
 
     $("refreshBtn").addEventListener("click", async () => {
@@ -743,6 +932,9 @@ async function init() {
   } catch (e) {
     showError(e.message);
   }
+
+
+
 }
 
 
