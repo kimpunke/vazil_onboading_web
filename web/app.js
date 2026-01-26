@@ -10,7 +10,18 @@ let failOffset = 0;
 const REALTIME_RUN_ID = "__REALTIME__";
 let realtimeTimer = null;
 let lastIngestTotalWritten = null;
+let lastIngestTotalDropped = null;
 let lastIngestTickMs = null;
+
+let lastRealtimeSummaryFetchMs = 0;
+const REALTIME_SUMMARY_POLL_MS = 2000;
+
+const INGEST_WINDOW = 10; // 최근 N번 폴링(막대그래프)
+let ingestBarChart = null;
+let ingestLabels = [];
+let ingestDeltaWritten = [];
+let ingestDeltaDropped = [];
+  
   
 let plcRunning = false; // UI 기준 PLC 동작 상태(실제 프로세스 제어는 다음 단계)
 
@@ -152,56 +163,72 @@ function renderDonutChart(pass, failBreakdown) {
     "#84cc16",
   ].slice(0, values.length);
 
-  const ctx = $("pie").getContext("2d");
+  const canvas = $("pie");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
 
-  if (pieChart) pieChart.destroy();
-
-  pieChart = new Chart(ctx, {
-    type: "doughnut",
-    data: {
-      labels,
-      datasets: [{
-        data: values,
-        backgroundColor: colors,
-        borderColor: "#0e1626",
-        borderWidth: 2,
-        hoverOffset: 8  // hover 시 살짝 커지게
-      }]
-    },
-    options: {
-      onClick: async (evt, elements) => {
-        if (!elements || elements.length === 0) return;
-        const idx = elements[0].index;
-        const label = pieChart?.data?.labels?.[idx];
-        if (!label) return;
-        await drillDownFromOverview(String(label));
-      },      
-      responsive: false,          // canvas size 고정(정적 페이지에서 안정적)
-      cutout: "62%",              // 도넛 구멍 크기
-      animation: { duration: 250 },
-      plugins: {
-        legend: {
-          position: "right",
-          labels: {
-            color: "#e2e8f0",
-            boxWidth: 10,
-            boxHeight: 10,
-            padding: 12
-          }
+  // ✅ 최초 1회만 생성
+  if (!pieChart) {
+    pieChart = new Chart(ctx, {
+      type: "doughnut",
+      data: {
+        labels,
+        datasets: [{
+          data: values,
+          backgroundColor: colors,
+          borderColor: "#0e1626",
+          borderWidth: 2,
+          hoverOffset: 8  // hover 시 살짝 커지게
+        }]
+      },
+      options: {
+        onClick: async (evt, elements) => {
+          if (!elements || elements.length === 0) return;
+          const idx = elements[0].index;
+          const label = pieChart?.data?.labels?.[idx];
+          if (!label) return;
+          await drillDownFromOverview(String(label));
         },
-        tooltip: {
-          callbacks: {
-            label: (context) => {
-              const value = Number(context.raw || 0);
-              const pct = total > 0 ? (value / total * 100) : 0;
-              return `${context.label}: ${value} (${pct.toFixed(2)}%)`;
+        responsive: false,          // canvas size 고정(정적 페이지에서 안정적)
+        cutout: "62%",              // 도넛 구멍 크기
+        animation: { duration: 250 },
+        plugins: {
+          legend: {
+            position: "right",
+            labels: {
+              color: "#e2e8f0",
+              boxWidth: 10,
+              boxHeight: 10,
+              padding: 12
+            }
+          },
+          tooltip: {
+            callbacks: {
+              label: (context) => {
+                // ⚠️ total은 함수 스코프 값이라 업데이트 시점 total로 다시 계산해야 함
+                const value = Number(context.raw || 0);
+                const t = pieChart?.data?.datasets?.[0]?.data?.reduce((a, b) => Number(a) + Number(b), 0) || 0;
+                const pct = t > 0 ? (value / t * 100) : 0;
+                return `${context.label}: ${value} (${pct.toFixed(2)}%)`;
+              }
             }
           }
         }
       }
-    }
-  });
+    });
+    return;
+  }
+
+  // ✅ 이후엔 destroy 없이 데이터만 갱신
+  pieChart.data.labels = labels;
+  pieChart.data.datasets[0].data = values;
+  pieChart.data.datasets[0].backgroundColor = colors;
+
+  // 색/데이터만 바뀌므로 애니메이션 없이 깔끔하게
+  pieChart.update("none");
 }
+
+
 
 function presetFailFiltersByType(typeKey) {
   // summary.errors 키 기준: parse_error / duplicate_error / checking_error ...
@@ -570,20 +597,27 @@ async function fetchTotalsFallback(runId) {
 
 
 async function loadSummary(runId) {
-  const s = await fetchJSON(`/api/runs/${encodeURIComponent(runId)}/summary`);
+  // ✅ realtime은 run 저장소(/api/runs/...)가 아니라 /api/realtime/summary 를 사용
+  const isRealtime = (runId === REALTIME_RUN_ID);
+
+  const s = isRealtime
+    ? await fetchJSON(`/api/realtime/summary`)
+    : await fetchJSON(`/api/runs/${encodeURIComponent(runId)}/summary`);
+
   let n = normalizeSummary(s);
 
-  // ✅ summary가 비어있거나(DATA-STATUS 없음) 0으로 떨어지면, passes/fails total로 복구
-  const looksEmpty =
-    (!s || typeof s !== "object" || Object.keys(s).length === 0) ||
-    (!s["DATA-STATUS"] && !s["data_status"] && !s["DATA_STATUS"]);
+  // ✅ runs 모드에서만 fallback(실시간은 /api/runs/.../passes,fails가 없음)
+  if (!isRealtime) {
+    const looksEmpty =
+      (!s || typeof s !== "object" || Object.keys(s).length === 0) ||
+      (!s["DATA-STATUS"] && !s["data_status"] && !s["DATA_STATUS"]);
 
-  if (looksEmpty || (n.total === 0 && n.pass === 0 && n.fail === 0)) {
-    const t = await fetchTotalsFallback(runId);
-    n.total = t.total;
-    n.pass = t.pass;
-    n.fail = t.fail;
-    // failBreakdown은 summary가 없으면 못 만드니 그대로(빈값) 두되, KPI는 맞춰줌
+    if (looksEmpty || (n.total === 0 && n.pass === 0 && n.fail === 0)) {
+      const t = await fetchTotalsFallback(runId);
+      n.total = t.total;
+      n.pass = t.pass;
+      n.fail = t.fail;
+    }
   }
 
   $("kpiTotal").textContent = fmt(n.total);
@@ -593,36 +627,60 @@ async function loadSummary(runId) {
   const rate = (n.total > 0) ? (n.fail / n.total * 100) : null;
   $("kpiRate").textContent = (rate === null) ? "-" : `${rate.toFixed(2)}%`;
 
-  $("runMeta").textContent = `run_id: ${runId}`;
+  $("runMeta").textContent = isRealtime ? `mode: realtime` : `run_id: ${runId}`;
 
   renderDonutChart(n.pass, n.failBreakdown);
   renderFailList(n.failBreakdown);
   updateFailCodeDatalist(s);
 }
 
+
 function setRealtimeUI(on) {
   $("remoteRunBtn").style.display = on ? "none" : "";
   $("realtimePlayBtn").style.display = on ? "" : "none";
   $("realtimeStopBtn").style.display = (on && plcRunning) ? "" : "none";
   $("ingestPill").style.display = on ? "" : "none";
+
+  // 차트 영역 토글
+  const pieBox = $("pieBox");
+  const ingestBox = $("ingestChartBox");
+  if (pieBox) pieBox.style.display = "";
+  if (ingestBox) ingestBox.style.display = on ? "" : "none";
+  
   
   if (on) {
     $("runMeta").textContent = `mode: realtime`;
-    // KPI는 “마지막 run” 기반이 아니라면 의미가 애매하니 일단 비움(원하면 유지하도록 변경 가능)
+
+    plcRunning = false;
     $("kpiTotal").textContent = "-";
     $("kpiPass").textContent  = "-";
     $("kpiFail").textContent  = "-";
     $("kpiRate").textContent  = "-";
-    $("failList").innerHTML = `<div class="stage-item"><span class="label">실시간 모드에서는 ingest 상태를 표시합니다.</span><span class="mono">-</span></div>`;
-    if (pieChart) { pieChart.destroy(); pieChart = null; }
+
+    $("failList").innerHTML = `<div class="stage-item"><span class="label">실시간 모드: 최근 ${INGEST_WINDOW}번 폴링 기준 Δ 막대그래프를 표시합니다.</span><span class="mono">-</span></div>`;
+
+
+
+    // ingest 그래프 초기화
+    resetIngestSeries();
+    if (ingestBarChart) { ingestBarChart.destroy(); ingestBarChart = null; }
+    ensureIngestBarChart();
+    updateIngestBarChart();
   } else {
     $("ingestPill").textContent = "";
     lastIngestTotalWritten = null;
+    lastIngestTotalDropped = null;
     lastIngestTickMs = null;
+
     plcRunning = false;
     $("realtimeStopBtn").style.display = "none";
+
+    // ingest 그래프 정리
+    if (ingestBarChart) { ingestBarChart.destroy(); ingestBarChart = null; }
+    resetIngestSeries();
   }  
 }
+
 
 function startRealtimePolling() {
   stopRealtimePolling();
@@ -636,26 +694,70 @@ function startRealtimePolling() {
       const lastSeenUtc = String(s.lastSeenUtc ?? "");
       const lastError = String(s.lastError ?? "");
 
-      // 수신 속도(records/sec) 계산
+      // Δ(증분) + 수신 속도(records/sec) 계산 + B 방식 시계열 업데이트
       const nowMs = Date.now();
       let rps = null;
-      if (lastIngestTotalWritten !== null && lastIngestTickMs !== null) {
+
+      let dw = 0;
+      let dd = 0;
+
+      if (lastIngestTotalWritten !== null && lastIngestTotalDropped !== null && lastIngestTickMs !== null) {
         const dt = (nowMs - lastIngestTickMs) / 1000.0;
-        const dw = totalWritten - lastIngestTotalWritten;
+
+        // 서버 재시작/리셋 대비: 음수면 0 처리
+        dw = Math.max(0, totalWritten - lastIngestTotalWritten);
+        dd = Math.max(0, totalDropped - lastIngestTotalDropped);
+
         if (dt > 0) rps = dw / dt;
+
+        // B 방식: 최근 N폴링 Δ 막대그래프
+        pushIngestPoint(_hhmmss(new Date(nowMs)), dw, dd);
+        ensureIngestBarChart();
+        updateIngestBarChart();
       }
+
       lastIngestTotalWritten = totalWritten;
+      lastIngestTotalDropped = totalDropped;
       lastIngestTickMs = nowMs;
+
 
       const rateTxt = (rps === null) ? "" : ` | ${rps.toFixed(1)} rec/s`;
       const errTxt = lastError ? ` | err=${lastError}` : "";
 
-      $("ingestPill").textContent =
-        `written=${fmt(totalWritten)} dropped=${fmt(totalDropped)} lastSeen=${lastSeenUtc || "-"}${rateTxt}${errTxt}`;
+      const agoSec = lastSeenUtc
+      ? Math.max(0, Math.floor((Date.now() - Date.parse(lastSeenUtc)) / 1000))
+      : null;
+    
+    $("ingestPill").textContent =
+      `W ${totalWritten.toLocaleString()} · D ${totalDropped} · ${agoSec !== null ? agoSec + "s ago" : "-"} · ${rps ? rps.toFixed(1) + "/s" : "-"}`;
+    
     } catch (e) {
       // 실시간 폴링은 에러를 치명으로 보지 않고 pill에만 표시
       $("ingestPill").textContent = `ingest: error (${e.message})`;
     }
+
+     // ✅ realtime summary 폴링(원형그래프/KPI 갱신)
+    const nowMs2 = Date.now();
+    if (nowMs2 - lastRealtimeSummaryFetchMs >= REALTIME_SUMMARY_POLL_MS) {
+      lastRealtimeSummaryFetchMs = nowMs2;
+
+      const summary = await fetchJSON("/api/realtime/summary");
+      const ns = normalizeSummary(summary);
+
+      $("kpiTotal").textContent = fmt(ns.total);
+      $("kpiPass").textContent  = fmt(ns.pass);
+      $("kpiFail").textContent  = fmt(ns.fail);
+      const rtRate = (ns.total > 0) ? (ns.fail / ns.total * 100) : null;
+      $("kpiRate").textContent = (rtRate === null) ? "-" : `${rtRate.toFixed(2)}%`;
+      
+
+      renderDonutChart(ns.pass, ns.failBreakdown);
+      renderFailList(ns.failBreakdown);
+      updateFailCodeDatalist(summary);
+}
+
+
+
   };
 
   tick();
@@ -668,6 +770,99 @@ function stopRealtimePolling() {
     realtimeTimer = null;
   }
 }
+
+function _hhmmss(d = new Date()) {
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+
+function resetIngestSeries() {
+  // 처음부터 고정 슬롯(INGEST_WINDOW개) 채워서 막대 폭이 절대 변하지 않게 함
+  ingestLabels = Array(INGEST_WINDOW).fill("");
+  ingestDeltaWritten = Array(INGEST_WINDOW).fill(0);
+  ingestDeltaDropped = Array(INGEST_WINDOW).fill(0);
+}
+
+
+function ensureIngestBarChart() {
+  const canvas = $("ingestBar");
+  if (!canvas) return;
+  if (ingestBarChart) return;
+
+  const ctx = canvas.getContext("2d");
+  ingestBarChart = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: ingestLabels,
+      datasets: [
+        {
+          label: "Δ written (per poll)",
+          data: ingestDeltaWritten,
+          borderWidth: 1,
+          barThickness: 18,
+          maxBarThickness: 22,
+        },
+        {
+          label: "Δ dropped (per poll)",
+          data: ingestDeltaDropped,
+          borderWidth: 1,
+          barThickness: 18,
+          maxBarThickness: 22,
+        },
+      ],      
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      scales: {
+        x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
+        y: { beginAtZero: true, ticks: { precision: 0 } },
+      },
+      plugins: {
+        legend: { display: true, position: "top" },
+        tooltip: { enabled: true },
+      },
+    },
+  });
+}
+
+function pushIngestPoint(label, dw, dd) {
+  // 혹시라도 길이가 깨진 상태로 들어오면 복구
+  if (ingestLabels.length !== INGEST_WINDOW) {
+    const pad = Math.max(0, INGEST_WINDOW - ingestLabels.length);
+    if (pad > 0) {
+      ingestLabels = Array(pad).fill("").concat(ingestLabels);
+      ingestDeltaWritten = Array(pad).fill(0).concat(ingestDeltaWritten);
+      ingestDeltaDropped = Array(pad).fill(0).concat(ingestDeltaDropped);
+    }
+    if (ingestLabels.length > INGEST_WINDOW) {
+      ingestLabels = ingestLabels.slice(-INGEST_WINDOW);
+      ingestDeltaWritten = ingestDeltaWritten.slice(-INGEST_WINDOW);
+      ingestDeltaDropped = ingestDeltaDropped.slice(-INGEST_WINDOW);
+    }
+  }
+
+  // 고정 길이 유지: 왼쪽 1칸 제거 후 오른쪽에 최신값 추가
+  ingestLabels.shift();
+  ingestDeltaWritten.shift();
+  ingestDeltaDropped.shift();
+
+  ingestLabels.push(label);
+  ingestDeltaWritten.push(dw);
+  ingestDeltaDropped.push(dd);
+}
+
+function updateIngestBarChart() {
+  if (!ingestBarChart) return;
+  ingestBarChart.data.labels = ingestLabels;
+  ingestBarChart.data.datasets[0].data = ingestDeltaWritten;
+  ingestBarChart.data.datasets[1].data = ingestDeltaDropped;
+  ingestBarChart.update("none");
+}
+
 
 
 
@@ -715,6 +910,8 @@ async function init() {
 
         plcRunning = true;
 
+        startRealtimePolling();
+
         const stopBtn = document.getElementById("realtimeStopBtn");
         if (stopBtn) stopBtn.style.display = "";
 
@@ -753,9 +950,6 @@ async function init() {
         btn.style.display = "none";
         stopRealtimePolling();
         $("ingestPill").textContent = "ingest: stopped";
-    
-        // 폴링은 유지(정지 후에도 written/dropped가 멈춘 상태를 보여주는 게 자연스러움)
-        if (!realtimeTimer) startRealtimePolling();
     
         // 다음 단계에서 /api/realtime/stop 만들면 여기서 호출:
         // await fetchJSON("/api/realtime/stop", { method: "POST" });
@@ -916,26 +1110,32 @@ async function init() {
     });
 
     
-
     $("refreshBtn").addEventListener("click", async () => {
       clearError();
       try {
         const current = $("runSelect").value;
+    
+        // ✅ realtime이면 runs sync 말고 realtime summary만 갱신
+        if (current === REALTIME_RUN_ID) {
+          await loadSummary(REALTIME_RUN_ID);
+          return;
+        }
+    
         const newRuns = await loadRuns();
         if (newRuns.includes(current)) $("runSelect").value = current;
+    
         await loadSummary($("runSelect").value);
-        setExplorerMode(explorerMode);        
+        setExplorerMode(explorerMode);
       } catch (e) {
         showError(e.message);
       }
     });
+
   } catch (e) {
     showError(e.message);
   }
-
-
-
 }
+    
 
 
 

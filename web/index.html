@@ -78,11 +78,17 @@
             <span class="pill mono" id="ingestPill" style="display:none;"></span>
           </div>          
         </div>
-
         <div class="overall">
-          <div class="chart-box">
+          <div class="chart-box" id="pieBox">
             <canvas id="pie" width="280" height="280" class="pie"></canvas>
           </div>
+        
+          <!-- 실시간(B 방식) ingest Δ 막대그래프 (최근 N폴링) -->
+          <div class="chart-box ingest-box" id="ingestChartBox" style="display:none;">
+            <div class="label" style="margin-bottom:6px;">Ingest Δ (최근 폴링)</div>
+            <canvas id="ingestBar" class="ingest-bar"></canvas>
+          </div>
+        
           <div class="stage-list" id="failList"></div>
         </div>
       </div>

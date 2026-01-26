@@ -75,6 +75,31 @@ async def _remote_get_ingest_status() -> dict:
 RUNS_DIR = Path("/data/runs")
 
 
+async def _remote_get_output_snapshot() -> dict:
+    if not REMOTE_WS_URL:
+        raise HTTPException(status_code=500, detail="REMOTE_WS_URL is not set")
+
+    async with websockets.connect(REMOTE_WS_URL) as ws:
+        if REMOTE_WS_TOKEN:
+            await ws.send(json.dumps({"type": "AUTH", "token": REMOTE_WS_TOKEN}))
+
+        await ws.send(json.dumps({"type": "GET_OUTPUT"}))
+
+        while True:
+            msg = await ws.recv()
+            if isinstance(msg, (bytes, bytearray)):
+                msg = msg.decode("utf-8", errors="replace")
+            try:
+                data = json.loads(msg)
+            except json.JSONDecodeError:
+                continue
+
+            if data.get("type") == "OUTPUT_SNAPSHOT":
+                return data
+
+            if data.get("type") == "ERROR":
+                raise HTTPException(status_code=502, detail=data.get("message", "remote error"))
+
 
 async def _remote_plc_control(cmd: str) -> dict:
     if not REMOTE_WS_URL:
@@ -164,6 +189,12 @@ async def realtime_status():
     # 단순 상태 조회는 락 없이 허용(폴링)
     # (REMOTE_WS_URL 미설정이면 _remote_get_ingest_status()에서 500 처리)
     return await _remote_get_ingest_status()
+
+@app.get("/api/realtime/summary")
+async def realtime_summary():
+    snap = await _remote_get_output_snapshot()
+    summary = snap.get("summary") or {}
+    return summary
 
 @app.post("/api/realtime/start")
 async def realtime_start():
