@@ -194,7 +194,9 @@ async def realtime_status():
 async def realtime_summary():
     snap = await _remote_get_output_snapshot()
     summary = snap.get("summary") or {}
-    return summary
+    run_id = snap.get("runId")
+    return {"run_id": run_id, "summary": summary}
+
 
 @app.post("/api/realtime/start")
 async def realtime_start():
@@ -206,6 +208,143 @@ async def realtime_stop():
     return await _remote_plc_control("PLC_STOP")
 
 
+def _iter_jsonl(text: str):
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            yield json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+
+@app.get("/api/realtime/fails")
+async def realtime_fails(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=5000),
+    stage: Optional[str] = None,
+    code: Optional[str] = None,
+    q: Optional[str] = None,
+):
+    snap = await _remote_get_output_snapshot()
+    fail_jsonl = snap.get("fail_data_jsonl") or ""
+    run_id = snap.get("runId")
+
+    q_norm = (q or "").strip().lower()
+    stage_norm = (stage or "").strip()
+    code_norm = (code or "").strip()
+
+    items: List[Dict[str, Any]] = []
+    total = 0
+
+    for rec in _iter_jsonl(fail_jsonl):
+        if stage_norm and rec.get("stage") != stage_norm:
+            continue
+
+        if code_norm:
+            want = code_norm.lower()
+            errs = rec.get("errors", [])
+            ok = False
+            if isinstance(errs, list):
+                for e in errs:
+                    if not isinstance(e, dict):
+                        continue
+                    c = e.get("code")
+                    if isinstance(c, str) and want in c.lower():
+                        ok = True
+                        break
+            if not ok:
+                continue
+
+        if q_norm:
+            blob_parts: List[str] = []
+            for k in ("recordId", "rawRecordId", "stage"):
+                v = rec.get(k)
+                if isinstance(v, str):
+                    blob_parts.append(v)
+            errs = rec.get("errors", [])
+            if isinstance(errs, list):
+                for e in errs:
+                    if isinstance(e, dict):
+                        m = e.get("message")
+                        if isinstance(m, str):
+                            blob_parts.append(m)
+
+            blob = " | ".join(blob_parts).lower()
+            if q_norm not in blob:
+                continue
+
+        if total >= offset and len(items) < limit:
+            items.append(rec)
+        total += 1
+
+    return {"run_id": run_id, "total": total, "offset": offset, "limit": limit, "items": items}
+
+
+@app.get("/api/realtime/passes")
+async def realtime_passes(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=5000),
+    q: Optional[str] = None,
+):
+    snap = await _remote_get_output_snapshot()
+    pass_jsonl = snap.get("final_results_jsonl") or ""
+    run_id = snap.get("runId")
+
+    q_norm = (q or "").strip().lower()
+
+    def _event_types(rec: Dict[str, Any]) -> List[str]:
+        ev = rec.get("events")
+        if not isinstance(ev, list):
+            return []
+        out: List[str] = []
+        for e in ev:
+            if isinstance(e, dict):
+                t = e.get("eventType")
+                if isinstance(t, str):
+                    out.append(t)
+        return out
+
+    items: List[Dict[str, Any]] = []
+    total = 0
+
+    for rec in _iter_jsonl(pass_jsonl):
+        if q_norm:
+            ctx = rec.get("context") if isinstance(rec.get("context"), dict) else {}
+            blob_parts: List[str] = []
+
+            raw_record_id = ctx.get("rawRecordId")
+            if isinstance(raw_record_id, str):
+                blob_parts.append(raw_record_id)
+
+            seq = ctx.get("seq")
+            if seq is not None:
+                blob_parts.append(str(seq))
+
+            eq = ctx.get("equipmentId")
+            if isinstance(eq, str):
+                blob_parts.append(eq)
+
+            pt = ctx.get("productType")
+            if isinstance(pt, str):
+                blob_parts.append(pt)
+
+            ts = ctx.get("ts")
+            if isinstance(ts, str):
+                blob_parts.append(ts)
+
+            blob_parts.extend(_event_types(rec))
+
+            blob = " | ".join(blob_parts).lower()
+            if q_norm not in blob:
+                continue
+
+        if total >= offset and len(items) < limit:
+            items.append(rec)
+        total += 1
+
+    return {"run_id": run_id, "total": total, "offset": offset, "limit": limit, "items": items}
 
 
 

@@ -32,6 +32,11 @@ let selectedFailRow = null;
 let activeDetailTab = "errors";
 
 
+// ✅ Refresh Loop(단일 진입점)용
+let activeRunId = null;               // 이번 렌더 사이클 기준 runId(스냅샷 고정)
+let explorerPendingRefresh = false;   // 새 데이터 감지 시, 즉시 렌더 대신 배너로 알림
+let lastExplorerHeadKey = null;       // 리스트 최상단 레코드 키(변경 감지)
+
 function fmt(n) {
   if (n === null || n === undefined) return "-";
   return new Intl.NumberFormat("ko-KR").format(Number(n));
@@ -47,6 +52,18 @@ function clearError() {
   box.style.display = "none";
   box.textContent = "";
 }
+function showLiveBanner() {
+  const b = $("liveNewBtn");
+  if (!b) return;
+  b.style.display = "";
+}
+
+function hideLiveBanner() {
+  const b = $("liveNewBtn");
+  if (!b) return;
+  b.style.display = "none";
+}
+
 
 async function fetchJSON(path, options = null) {
   const url = `${API_BASE}${path}`;
@@ -407,8 +424,10 @@ async function loadPasses(runId, { resetOffset = false } = {}) {
   params.set("limit", String(limit));
   if (q) params.set("q", q);
 
-  const data = await fetchJSON(`/api/runs/${encodeURIComponent(runId)}/passes?${params.toString()}`);
+  const data = await fetchPassesPage(runId);
   renderPassTable(data);
+  
+  
 }
 
 function renderPassTable(page) {
@@ -489,9 +508,48 @@ async function loadFails(runId, { resetOffset = false } = {}) {
   if (code) params.set("code", code);
   if (q) params.set("q", q);
 
-  const data = await fetchJSON(`/api/runs/${encodeURIComponent(runId)}/fails?${params.toString()}`);
+
+  const data = await fetchFailsPage(runId);
   renderFailTable(data);
+  
 }
+
+
+async function fetchFailsPage(runId) {
+  const stage = $("failStage") ? $("failStage").value.trim() : "";
+  const code = $("failCode") ? $("failCode").value.trim() : "";
+  const q = $("failQuery") ? $("failQuery").value.trim() : "";
+
+  const params = new URLSearchParams();
+  params.set("offset", String(failOffset));
+  params.set("limit", String(failLimit));
+  if (stage) params.set("stage", stage);
+  if (code) params.set("code", code);
+  if (q) params.set("q", q);
+
+  // ✅ realtime이면 realtime fails API 사용
+  if (runId === REALTIME_RUN_ID) {
+    return await fetchJSON(`/api/realtime/fails?${params.toString()}`);
+  }
+  return await fetchJSON(`/api/runs/${encodeURIComponent(runId)}/fails?${params.toString()}`);
+}
+
+async function fetchPassesPage(runId) {
+  const limit = Math.min(5000, Math.max(1, Number($("passLimit").value || 5)));
+  const q = ($("passQuery").value || "").trim();
+
+  const params = new URLSearchParams();
+  params.set("offset", String(passOffset));
+  params.set("limit", String(limit));
+  if (q) params.set("q", q);
+
+  // ✅ realtime이면 realtime passes API 사용
+  if (runId === REALTIME_RUN_ID) {
+    return await fetchJSON(`/api/realtime/passes?${params.toString()}`);
+  }
+  return await fetchJSON(`/api/runs/${encodeURIComponent(runId)}/passes?${params.toString()}`);
+}
+
 
 function renderFailTable(page) {
   const tbody = $("failTbody");
@@ -603,8 +661,13 @@ async function loadSummary(runId) {
   const s = isRealtime
     ? await fetchJSON(`/api/realtime/summary`)
     : await fetchJSON(`/api/runs/${encodeURIComponent(runId)}/summary`);
+  const summaryObj = (isRealtime && s && typeof s === "object" && s.summary)
+    ? s.summary
+    : s;
+  
+  
+  let n = normalizeSummary(summaryObj);
 
-  let n = normalizeSummary(s);
 
   // ✅ runs 모드에서만 fallback(실시간은 /api/runs/.../passes,fails가 없음)
   if (!isRealtime) {
@@ -627,12 +690,91 @@ async function loadSummary(runId) {
   const rate = (n.total > 0) ? (n.fail / n.total * 100) : null;
   $("kpiRate").textContent = (rate === null) ? "-" : `${rate.toFixed(2)}%`;
 
-  $("runMeta").textContent = isRealtime ? `mode: realtime` : `run_id: ${runId}`;
+  if (isRealtime && s && typeof s === "object" && typeof s.run_id === "string" && s.run_id) {
+    $("runMeta").textContent = `mode: realtime | run_id: ${s.run_id}`;
+  } else {
+    $("runMeta").textContent = isRealtime ? `mode: realtime` : `run_id: ${runId}`;
+  }
+  
 
   renderDonutChart(n.pass, n.failBreakdown);
   renderFailList(n.failBreakdown);
   updateFailCodeDatalist(s);
 }
+
+function currentRunSelection() {
+  return $("runSelect") ? $("runSelect").value : "";
+}
+
+function isUserAtTopOfExplorer() {
+  const wrap = document.querySelector(".tbl-wrap");
+  if (!wrap) return true;
+  return wrap.scrollTop <= 2;
+}
+
+function getExplorerHeadKey(page, mode) {
+  const items = Array.isArray(page?.items) ? page.items : [];
+  if (items.length === 0) return null;
+
+  if (mode === "FAIL") {
+    const r = items[0];
+    const rid = (r && r.recordId) ? String(r.recordId) : "";
+    const stg = (r && r.stage) ? String(r.stage) : "";
+    return `FAIL|${stg}|${rid}`;
+  } else {
+    const r = items[0];
+    const ctx = (r && r.context && typeof r.context === "object") ? r.context : {};
+    const raw = (ctx.rawRecordId && typeof ctx.rawRecordId === "string") ? ctx.rawRecordId : "";
+    const seq = (ctx.seq !== undefined && ctx.seq !== null) ? String(ctx.seq) : "";
+    return `PASS|${raw}|${seq}`;
+  }
+}
+
+async function refreshAll({ forceExplorer = false } = {}) {
+  const sel = currentRunSelection();
+
+  // 1) 이번 사이클 run 확정(스냅샷 기준 고정)
+  activeRunId = sel;
+
+  // 2) summary(=pie chart/KPI) 항상 갱신
+  await loadSummary(sel);
+
+  // 3) Explorer는 "현재 탭만" 갱신
+  // - 실시간 모드에서 즉시 렌더 점프 방지(5번 UX) 위해:
+  //   최상단이 아니면 배너만 띄우고 렌더는 유저 클릭 시점으로 미룸
+  const shouldDefer = (!forceExplorer && !isUserAtTopOfExplorer());
+
+  if (explorerMode === "FAIL") {
+    const page = await fetchFailsPage(sel); // 아래에서 추가할 래퍼
+    const headKey = getExplorerHeadKey(page, "FAIL");
+
+    if (lastExplorerHeadKey && headKey && headKey !== lastExplorerHeadKey && shouldDefer) {
+      explorerPendingRefresh = true;
+      showLiveBanner();
+      return;
+    }
+
+    explorerPendingRefresh = false;
+    hideLiveBanner();
+    lastExplorerHeadKey = headKey;
+    renderFailTable(page);
+  } else {
+    const page = await fetchPassesPage(sel); // 아래에서 추가할 래퍼
+    const headKey = getExplorerHeadKey(page, "PASS");
+
+    if (lastExplorerHeadKey && headKey && headKey !== lastExplorerHeadKey && shouldDefer) {
+      explorerPendingRefresh = true;
+      showLiveBanner();
+      return;
+    }
+
+    explorerPendingRefresh = false;
+    hideLiveBanner();
+    lastExplorerHeadKey = headKey;
+    renderPassTable(page);
+  }
+}
+
 
 
 function setRealtimeUI(on) {
@@ -741,19 +883,8 @@ function startRealtimePolling() {
     if (nowMs2 - lastRealtimeSummaryFetchMs >= REALTIME_SUMMARY_POLL_MS) {
       lastRealtimeSummaryFetchMs = nowMs2;
 
-      const summary = await fetchJSON("/api/realtime/summary");
-      const ns = normalizeSummary(summary);
+      await refreshAll(); // ✅ summary + (현재 탭 Explorer) 동기 갱신
 
-      $("kpiTotal").textContent = fmt(ns.total);
-      $("kpiPass").textContent  = fmt(ns.pass);
-      $("kpiFail").textContent  = fmt(ns.fail);
-      const rtRate = (ns.total > 0) ? (ns.fail / ns.total * 100) : null;
-      $("kpiRate").textContent = (rtRate === null) ? "-" : `${rtRate.toFixed(2)}%`;
-      
-
-      renderDonutChart(ns.pass, ns.failBreakdown);
-      renderFailList(ns.failBreakdown);
-      updateFailCodeDatalist(summary);
 }
 
 
@@ -867,6 +998,9 @@ function updateIngestBarChart() {
 
 
 async function init() {
+
+
+  
   clearError();
   try {
     const runs = await loadRuns();
@@ -887,6 +1021,15 @@ async function init() {
     setExplorerMode("FAIL");
 
 
+    $("liveNewBtn").addEventListener("click", async () => {
+      clearError();
+      try {
+        await refreshAll({ forceExplorer: true }); // ✅ 강제 렌더(점프 허용을 유저가 선택)
+      } catch (e) {
+        showError(e.message);
+      }
+    });
+    
 
     $("realtimePlayBtn").addEventListener("click", async () => {
       clearError();

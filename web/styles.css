@@ -386,3 +386,16 @@
   border: 1px solid var(--border);
   border-radius: 16px;
 }
+
+.live-new{
+  padding:8px 10px;
+  border-radius:999px;
+  font-size:12px;
+  background:#0e1626;
+  border:1px solid #2b3b64;
+  color: var(--text);
+  cursor:pointer;
+}
+.live-new:hover{
+  border-color:#3b82f6;
+}
