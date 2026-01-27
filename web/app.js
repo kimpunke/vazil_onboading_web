@@ -36,6 +36,8 @@ let activeDetailTab = "errors";
 let activeRunId = null;               // 이번 렌더 사이클 기준 runId(스냅샷 고정)
 let explorerPendingRefresh = false;   // 새 데이터 감지 시, 즉시 렌더 대신 배너로 알림
 let lastExplorerHeadKey = null;       // 리스트 최상단 레코드 키(변경 감지)
+let refreshInFlight = false;
+
 
 function fmt(n) {
   if (n === null || n === undefined) return "-";
@@ -699,7 +701,7 @@ async function loadSummary(runId) {
 
   renderDonutChart(n.pass, n.failBreakdown);
   renderFailList(n.failBreakdown);
-  updateFailCodeDatalist(s);
+  updateFailCodeDatalist(summaryObj);
 }
 
 function currentRunSelection() {
@@ -731,49 +733,57 @@ function getExplorerHeadKey(page, mode) {
 }
 
 async function refreshAll({ forceExplorer = false } = {}) {
-  const sel = currentRunSelection();
+  if (refreshInFlight) return;
+  refreshInFlight = true;
 
-  // 1) 이번 사이클 run 확정(스냅샷 기준 고정)
-  activeRunId = sel;
+  try {
+    const sel = currentRunSelection();
 
-  // 2) summary(=pie chart/KPI) 항상 갱신
-  await loadSummary(sel);
+    // 1) 이번 사이클 run 확정(스냅샷 기준 고정)
+    activeRunId = sel;
 
-  // 3) Explorer는 "현재 탭만" 갱신
-  // - 실시간 모드에서 즉시 렌더 점프 방지(5번 UX) 위해:
-  //   최상단이 아니면 배너만 띄우고 렌더는 유저 클릭 시점으로 미룸
-  const shouldDefer = (!forceExplorer && !isUserAtTopOfExplorer());
+    // 2) summary(=pie chart/KPI) 항상 갱신
+    await loadSummary(sel);
 
-  if (explorerMode === "FAIL") {
-    const page = await fetchFailsPage(sel); // 아래에서 추가할 래퍼
-    const headKey = getExplorerHeadKey(page, "FAIL");
+    // 3) Explorer는 "현재 탭만" 갱신
+    // - 실시간 모드에서 즉시 렌더 점프 방지(5번 UX) 위해:
+    //   최상단이 아니면 배너만 띄우고 렌더는 유저 클릭 시점으로 미룸
+    const shouldDefer = (!forceExplorer && !isUserAtTopOfExplorer());
 
-    if (lastExplorerHeadKey && headKey && headKey !== lastExplorerHeadKey && shouldDefer) {
-      explorerPendingRefresh = true;
-      showLiveBanner();
-      return;
+    if (explorerMode === "FAIL") {
+      const page = await fetchFailsPage(sel); // 아래에서 추가할 래퍼
+      const headKey = getExplorerHeadKey(page, "FAIL");
+
+      if (lastExplorerHeadKey && headKey && headKey !== lastExplorerHeadKey && shouldDefer) {
+        explorerPendingRefresh = true;
+        showLiveBanner();
+        return;
+      }
+
+      explorerPendingRefresh = false;
+      hideLiveBanner();
+      lastExplorerHeadKey = headKey;
+      renderFailTable(page);
+    } else {
+      const page = await fetchPassesPage(sel); // 아래에서 추가할 래퍼
+      const headKey = getExplorerHeadKey(page, "PASS");
+
+      if (lastExplorerHeadKey && headKey && headKey !== lastExplorerHeadKey && shouldDefer) {
+        explorerPendingRefresh = true;
+        showLiveBanner();
+        return;
+      }
+
+      explorerPendingRefresh = false;
+      hideLiveBanner();
+      lastExplorerHeadKey = headKey;
+      renderPassTable(page);
     }
-
-    explorerPendingRefresh = false;
-    hideLiveBanner();
-    lastExplorerHeadKey = headKey;
-    renderFailTable(page);
-  } else {
-    const page = await fetchPassesPage(sel); // 아래에서 추가할 래퍼
-    const headKey = getExplorerHeadKey(page, "PASS");
-
-    if (lastExplorerHeadKey && headKey && headKey !== lastExplorerHeadKey && shouldDefer) {
-      explorerPendingRefresh = true;
-      showLiveBanner();
-      return;
-    }
-
-    explorerPendingRefresh = false;
-    hideLiveBanner();
-    lastExplorerHeadKey = headKey;
-    renderPassTable(page);
+  } finally {
+    refreshInFlight = false;
   }
 }
+
 
 
 
@@ -883,7 +893,13 @@ function startRealtimePolling() {
     if (nowMs2 - lastRealtimeSummaryFetchMs >= REALTIME_SUMMARY_POLL_MS) {
       lastRealtimeSummaryFetchMs = nowMs2;
 
-      await refreshAll(); // ✅ summary + (현재 탭 Explorer) 동기 갱신
+      try {
+        await refreshAll(); // ✅ summary + (현재 탭 Explorer) 동기 갱신
+      } catch (e) {
+        showError(e.message); // 상단 에러바에 찍고
+        // KPI/차트는 마지막 정상값 유지(0으로 덮어쓰지 않음)
+      }
+      
 
 }
 

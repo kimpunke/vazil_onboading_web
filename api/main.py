@@ -18,7 +18,7 @@ async def _remote_run_pipeline(input_sel: str = "dummy") -> dict:
     if not REMOTE_WS_URL:
         raise HTTPException(status_code=500, detail="REMOTE_WS_URL is not set")
 
-    async with websockets.connect(REMOTE_WS_URL) as ws:
+    async with websockets.connect(REMOTE_WS_URL, max_size = None) as ws:
         # (옵션) 토큰 인증: server.py가 WS_TOKEN 요구하는 경우
         if REMOTE_WS_TOKEN:
             await ws.send(json.dumps({"type": "AUTH", "token": REMOTE_WS_TOKEN}))
@@ -48,7 +48,7 @@ async def _remote_get_ingest_status() -> dict:
     if not REMOTE_WS_URL:
         raise HTTPException(status_code=500, detail="REMOTE_WS_URL is not set")
 
-    async with websockets.connect(REMOTE_WS_URL) as ws:
+    async with websockets.connect(REMOTE_WS_URL, max_size = None) as ws:
         if REMOTE_WS_TOKEN:
             await ws.send(json.dumps({"type": "AUTH", "token": REMOTE_WS_TOKEN}))
 
@@ -75,11 +75,46 @@ async def _remote_get_ingest_status() -> dict:
 RUNS_DIR = Path("/data/runs")
 
 
+async def _remote_get_fails_page(offset, limit, stage, code, q):
+    if not REMOTE_WS_URL:
+        raise HTTPException(status_code=500, detail="REMOTE_WS_URL is not set")
+
+    async with websockets.connect(REMOTE_WS_URL, max_size=None) as ws:
+        if REMOTE_WS_TOKEN:
+            await ws.send(json.dumps({"type": "AUTH", "token": REMOTE_WS_TOKEN}))
+
+        await ws.send(json.dumps({
+            "type": "GET_FAILS_PAGE",
+            "offset": int(offset),
+            "limit": int(limit),
+            "stage": stage,
+            "code": code,
+            "q": q,
+        }))
+
+        while True:
+            raw = await ws.recv()
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode("utf-8", errors="replace")
+
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            if msg.get("type") == "FAILS_PAGE":
+                return msg
+
+            if msg.get("type") == "ERROR":
+                raise HTTPException(status_code=502, detail=msg.get("message", "remote error"))
+
+
+
 async def _remote_get_output_snapshot() -> dict:
     if not REMOTE_WS_URL:
         raise HTTPException(status_code=500, detail="REMOTE_WS_URL is not set")
 
-    async with websockets.connect(REMOTE_WS_URL) as ws:
+    async with websockets.connect(REMOTE_WS_URL , max_size = None) as ws:
         if REMOTE_WS_TOKEN:
             await ws.send(json.dumps({"type": "AUTH", "token": REMOTE_WS_TOKEN}))
 
@@ -100,12 +135,37 @@ async def _remote_get_output_snapshot() -> dict:
             if data.get("type") == "ERROR":
                 raise HTTPException(status_code=502, detail=data.get("message", "remote error"))
 
+async def _remote_get_summary_snapshot() -> dict:
+    if not REMOTE_WS_URL:
+        raise HTTPException(status_code=500, detail="REMOTE_WS_URL is not set")
+
+    async with websockets.connect(REMOTE_WS_URL, max_size=None) as ws:
+        if REMOTE_WS_TOKEN:
+            await ws.send(json.dumps({"type": "AUTH", "token": REMOTE_WS_TOKEN}))
+
+        await ws.send(json.dumps({"type": "GET_SUMMARY"}))
+
+        while True:
+            msg = await ws.recv()
+            if isinstance(msg, (bytes, bytearray)):
+                msg = msg.decode("utf-8", errors="replace")
+            try:
+                data = json.loads(msg)
+            except json.JSONDecodeError:
+                continue
+
+            if data.get("type") == "SUMMARY_SNAPSHOT":
+                return data
+
+            if data.get("type") == "ERROR":
+                raise HTTPException(status_code=502, detail=data.get("message", "remote error"))
+
 
 async def _remote_plc_control(cmd: str) -> dict:
     if not REMOTE_WS_URL:
         raise HTTPException(status_code=500, detail="REMOTE_WS_URL is not set")
 
-    async with websockets.connect(REMOTE_WS_URL) as ws:
+    async with websockets.connect(REMOTE_WS_URL , max_size = None) as ws:
         if REMOTE_WS_TOKEN:
             await ws.send(json.dumps({"type": "AUTH", "token": REMOTE_WS_TOKEN}))
 
@@ -192,10 +252,18 @@ async def realtime_status():
 
 @app.get("/api/realtime/summary")
 async def realtime_summary():
-    snap = await _remote_get_output_snapshot()
+    try:
+        snap = await _remote_get_summary_snapshot()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"realtime summary failed: {e}")
+
     summary = snap.get("summary") or {}
     run_id = snap.get("runId")
     return {"run_id": run_id, "summary": summary}
+
+
 
 
 @app.post("/api/realtime/start")
@@ -227,59 +295,39 @@ async def realtime_fails(
     code: Optional[str] = None,
     q: Optional[str] = None,
 ):
-    snap = await _remote_get_output_snapshot()
-    fail_jsonl = snap.get("fail_data_jsonl") or ""
-    run_id = snap.get("runId")
+    page = await _remote_get_fails_page(offset, limit, stage, code, q)
+    return page
 
-    q_norm = (q or "").strip().lower()
-    stage_norm = (stage or "").strip()
-    code_norm = (code or "").strip()
 
-    items: List[Dict[str, Any]] = []
-    total = 0
 
-    for rec in _iter_jsonl(fail_jsonl):
-        if stage_norm and rec.get("stage") != stage_norm:
-            continue
+async def _remote_get_passes_page(offset, limit, q):
+    if not REMOTE_WS_URL:
+        raise HTTPException(status_code=500, detail="REMOTE_WS_URL is not set")
 
-        if code_norm:
-            want = code_norm.lower()
-            errs = rec.get("errors", [])
-            ok = False
-            if isinstance(errs, list):
-                for e in errs:
-                    if not isinstance(e, dict):
-                        continue
-                    c = e.get("code")
-                    if isinstance(c, str) and want in c.lower():
-                        ok = True
-                        break
-            if not ok:
+    async with websockets.connect(REMOTE_WS_URL, max_size=None) as ws:
+        if REMOTE_WS_TOKEN:
+            await ws.send(json.dumps({"type": "AUTH", "token": REMOTE_WS_TOKEN}))
+
+        await ws.send(json.dumps({
+            "type": "GET_PASSES_PAGE",
+            "offset": int(offset),
+            "limit": int(limit),
+            "q": q,
+        }))
+
+        while True:
+            raw = await ws.recv()
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode("utf-8", errors="replace")
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
                 continue
 
-        if q_norm:
-            blob_parts: List[str] = []
-            for k in ("recordId", "rawRecordId", "stage"):
-                v = rec.get(k)
-                if isinstance(v, str):
-                    blob_parts.append(v)
-            errs = rec.get("errors", [])
-            if isinstance(errs, list):
-                for e in errs:
-                    if isinstance(e, dict):
-                        m = e.get("message")
-                        if isinstance(m, str):
-                            blob_parts.append(m)
-
-            blob = " | ".join(blob_parts).lower()
-            if q_norm not in blob:
-                continue
-
-        if total >= offset and len(items) < limit:
-            items.append(rec)
-        total += 1
-
-    return {"run_id": run_id, "total": total, "offset": offset, "limit": limit, "items": items}
+            if msg.get("type") == "PASSES_PAGE":
+                return msg
+            if msg.get("type") == "ERROR":
+                raise HTTPException(status_code=502, detail=msg.get("message", "remote error"))
 
 
 @app.get("/api/realtime/passes")
@@ -288,63 +336,8 @@ async def realtime_passes(
     limit: int = Query(50, ge=1, le=5000),
     q: Optional[str] = None,
 ):
-    snap = await _remote_get_output_snapshot()
-    pass_jsonl = snap.get("final_results_jsonl") or ""
-    run_id = snap.get("runId")
+    return await _remote_get_passes_page(offset, limit, q)
 
-    q_norm = (q or "").strip().lower()
-
-    def _event_types(rec: Dict[str, Any]) -> List[str]:
-        ev = rec.get("events")
-        if not isinstance(ev, list):
-            return []
-        out: List[str] = []
-        for e in ev:
-            if isinstance(e, dict):
-                t = e.get("eventType")
-                if isinstance(t, str):
-                    out.append(t)
-        return out
-
-    items: List[Dict[str, Any]] = []
-    total = 0
-
-    for rec in _iter_jsonl(pass_jsonl):
-        if q_norm:
-            ctx = rec.get("context") if isinstance(rec.get("context"), dict) else {}
-            blob_parts: List[str] = []
-
-            raw_record_id = ctx.get("rawRecordId")
-            if isinstance(raw_record_id, str):
-                blob_parts.append(raw_record_id)
-
-            seq = ctx.get("seq")
-            if seq is not None:
-                blob_parts.append(str(seq))
-
-            eq = ctx.get("equipmentId")
-            if isinstance(eq, str):
-                blob_parts.append(eq)
-
-            pt = ctx.get("productType")
-            if isinstance(pt, str):
-                blob_parts.append(pt)
-
-            ts = ctx.get("ts")
-            if isinstance(ts, str):
-                blob_parts.append(ts)
-
-            blob_parts.extend(_event_types(rec))
-
-            blob = " | ".join(blob_parts).lower()
-            if q_norm not in blob:
-                continue
-
-        if total >= offset and len(items) < limit:
-            items.append(rec)
-        total += 1
-
-    return {"run_id": run_id, "total": total, "offset": offset, "limit": limit, "items": items}
 
 
 
