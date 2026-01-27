@@ -55,6 +55,18 @@
   
   .row{ display:flex; gap:12px; align-items:center; }
   .row.between{ justify-content:space-between; }
+
+
+  #runMeta{
+    white-space:nowrap;
+  }  
+
+  #ingestPill{
+    max-width:220px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
   
   .pill-row{ margin-top:6px; display:flex; gap:10px; flex-wrap:wrap; }
   .pill{

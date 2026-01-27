@@ -67,6 +67,8 @@ function hideLiveBanner() {
 }
 
 
+
+
 async function fetchJSON(path, options = null) {
   const url = `${API_BASE}${path}`;
   const res = await fetch(url, { cache: "no-store", ...(options || {}) });
@@ -692,12 +694,12 @@ async function loadSummary(runId) {
   const rate = (n.total > 0) ? (n.fail / n.total * 100) : null;
   $("kpiRate").textContent = (rate === null) ? "-" : `${rate.toFixed(2)}%`;
 
-  if (isRealtime && s && typeof s === "object" && typeof s.run_id === "string" && s.run_id) {
-    $("runMeta").textContent = `mode: realtime | run_id: ${s.run_id}`;
-  } else {
-    $("runMeta").textContent = isRealtime ? `mode: realtime` : `run_id: ${runId}`;
-  }
-  
+  const runMetaEl = $("runMeta");
+
+  runMetaEl.textContent = isRealtime ? `mode: realtime` : `mode: run`;
+  runMetaEl.title = isRealtime ? `mode: realtime` : `mode: run`;
+
+
 
   renderDonutChart(n.pass, n.failBreakdown);
   renderFailList(n.failBreakdown);
@@ -787,6 +789,7 @@ async function refreshAll({ forceExplorer = false } = {}) {
 
 
 
+
 function setRealtimeUI(on) {
   $("remoteRunBtn").style.display = on ? "none" : "";
   $("realtimePlayBtn").style.display = on ? "" : "none";
@@ -838,6 +841,8 @@ function startRealtimePolling() {
   stopRealtimePolling();
 
   const tick = async () => {
+    if (refreshInFlight) return;
+
     try {
       const s = await fetchJSON("/api/realtime/status");
 
@@ -1069,6 +1074,12 @@ async function init() {
 
         plcRunning = true;
 
+        const sel = $("runSelect");
+        if (sel) sel.value = REALTIME_RUN_ID;
+
+        lastRealtimeSummaryFetchMs = Date.now();
+
+        await refreshAll({ forceExplorer: true});
         startRealtimePolling();
 
         const stopBtn = document.getElementById("realtimeStopBtn");
@@ -1253,6 +1264,11 @@ async function init() {
       try {
         const v = $("runSelect").value;
 
+        // ✅ 실시간에서 다른 run으로 바꾸면: 폴링 + PLC(ingest)까지 완전 종료
+        if (plcRunning && v !== REALTIME_RUN_ID) {
+          await stopRealtimeCompletely();
+        }
+
         if (v === REALTIME_RUN_ID) {
           setRealtimeUI(true);
           stopRealtimePolling();
@@ -1267,6 +1283,7 @@ async function init() {
         setExplorerMode(explorerMode);
       } catch (e) { showError(e.message); }
     });
+
 
     
     $("refreshBtn").addEventListener("click", async () => {
