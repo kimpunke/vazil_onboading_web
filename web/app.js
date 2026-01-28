@@ -930,6 +930,37 @@ function _hhmmss(d = new Date()) {
   return `${hh}:${mm}:${ss}`;
 }
 
+async function stopRealtimeCompletely() {
+  // 1) 프론트 폴링 정지
+  stopRealtimePolling();
+
+  // 2) PLC 실행 중이면 서버에 stop 요청
+  if (plcRunning) {
+    const resp = await fetchJSON("/api/realtime/stop", { method: "POST" });
+    const st = resp && resp.status ? String(resp.status) : "";
+
+    if (st !== "stopped" && st !== "already_stopped") {
+      throw new Error(`PLC stop failed: ${st || "unknown"}`);
+    }
+  }
+
+  // 3) UI/상태 정리
+  plcRunning = false;
+
+  const stopBtn = document.getElementById("realtimeStopBtn");
+  if (stopBtn) stopBtn.style.display = "none";
+
+  const pill = document.getElementById("ingestPill");
+  if (pill) pill.textContent = "ingest: stopped";
+}
+
+function _hhmmss(d = new Date()) {
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+
 function resetIngestSeries() {
   // 처음부터 고정 슬롯(INGEST_WINDOW개) 채워서 막대 폭이 절대 변하지 않게 함
   ingestLabels = Array(INGEST_WINDOW).fill("");

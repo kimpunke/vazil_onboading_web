@@ -50,7 +50,7 @@
   .sub{ margin-top:10px; color:var(--muted); font-size:12px; }
   
   .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
-  .ok{ color:var(--ok); }
+  .ok{ color:var(--ok); }ㅁdks 
   .bad{ color:var(--bad); }
   
   .row{ display:flex; gap:12px; align-items:center; }
@@ -61,12 +61,7 @@
     white-space:nowrap;
   }  
 
-  #ingestPill{
-    max-width:220px;
-    overflow:hidden;
-    text-overflow:ellipsis;
-    white-space:nowrap;
-  }
+
   
   .pill-row{ margin-top:6px; display:flex; gap:10px; flex-wrap:wrap; }
   .pill{
@@ -85,13 +80,7 @@
   .dot.ok{ background:var(--ok); }
   .dot.bad{ background:var(--bad); }
   
-  .overall{
-    margin-top:14px;
-    display:flex;
-    gap:16px;
-    align-items:flex-start;
-    flex-wrap:wrap;
-  }
+
   
   .chart-box{
     position: relative;
@@ -361,6 +350,29 @@
 @keyframes spin{
   from{ transform: rotate(0deg); }
   to  { transform: rotate(360deg); }
+}
+
+/* overall을 기준 컨테이너로 */
+.overall{
+  position:relative;
+  margin-top:14px;
+  display:flex;
+  gap:16px;
+  align-items:flex-start;
+  flex-wrap:wrap;
+}
+
+/* ✅ ingestChartBox는 레이아웃에서 분리해서 아래에 고정 */
+#ingestChartBox{
+  position:absolute;
+  left: 0;
+  top: calc(280px + 16px);  /* pie 높이(280) + gap(16) 아래로 */
+  width: 360px;            /* 기존 ingest-box width 유지 */
+}
+
+/* ✅ overall 카드가 ingest 아래까지 공간을 확보하도록 패딩 추가 */
+.overall{
+  padding-bottom: calc(280px + 16px);
 }
 
 
